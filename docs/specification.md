@@ -120,36 +120,47 @@ expect:
 
 ### CI Mode: Deterministic Runner
 
-For continuous integration, FlowSpec provides a deterministic runner that executes specs without an LLM. This is fast, cheap, and repeatable.
+For continuous integration, FlowSpec provides a deterministic runner that executes specs without an LLM. This is fast, cheap, and repeatable. The runner uses [agent-browser](https://github.com/vercel-labs/agent-browser) for browser automation.
 
 ```typescript
-// Simplified runner logic
-async function runFlow(page: Page, flow: Flow) {
+// Simplified runner logic using agent-browser CLI
+import { execSync } from 'child_process';
+
+function ab(command: string): string {
+  return execSync(`agent-browser ${command}`, { encoding: 'utf-8' });
+}
+
+async function runFlow(flow: Flow) {
   for (const step of flow.steps) {
     if (step.visit) {
-      await page.goto(step.visit);
+      ab(`open ${step.visit}`);
     } else if (step.click) {
-      await page.getByRole('button', { name: step.click })
-        .or(page.getByText(step.click))
-        .click();
+      const snapshot = ab('snapshot -i');
+      const ref = findRefByText(snapshot, step.click);
+      ab(`click ${ref}`);
     } else if (step.fill) {
       for (const [label, value] of Object.entries(step.fill)) {
-        await page.getByLabel(label).fill(value);
+        const snapshot = ab('snapshot -i');
+        const ref = findRefByLabel(snapshot, label);
+        ab(`fill ${ref} "${value}"`);
       }
     } else if (step.select) {
       for (const [label, value] of Object.entries(step.select)) {
-        await page.getByLabel(label).selectOption(value);
+        const snapshot = ab('snapshot -i');
+        const ref = findRefByLabel(snapshot, label);
+        ab(`select ${ref} "${value}"`);
       }
     }
   }
 
   for (const assertion of flow.expect) {
+    const snapshot = ab('snapshot');
     if (assertion.visible) {
-      await expect(page.getByText(assertion.visible)).toBeVisible();
+      assertTextVisible(snapshot, assertion.visible);
     } else if (assertion.url) {
-      await expect(page).toHaveURL(assertion.url);
+      assertUrlMatches(assertion.url);
     } else if (assertion.matches) {
-      await expect(page.getByText(new RegExp(assertion.matches))).toBeVisible();
+      assertTextMatches(snapshot, new RegExp(assertion.matches));
     }
   }
 }
@@ -158,8 +169,8 @@ async function runFlow(page: Page, flow: Flow) {
 Usage:
 
 ```bash
-npx flowspec run specs/                     # Run all flows
-npx flowspec run specs/checkout.flow.yaml   # Run single flow
+bunx flowspec run specs/                     # Run all flows
+bunx flowspec run specs/checkout.flow.yaml   # Run single flow
 ```
 
 ### Development Mode: Agent-Driven Execution
