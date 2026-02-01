@@ -1,0 +1,11 @@
+name: dashboard-navigation
+description: User can navigate through dashboard pages
+steps:
+  - visit: /dashboard
+  - click: Settings
+  - click: Profile
+  - click: Home
+expect:
+  - url: /dashboard
+  - visible: Welcome back
+  - visible: Recent Activity

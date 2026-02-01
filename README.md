@@ -42,6 +42,36 @@ expect:
 npx flowspec run specs/checkout.flow.yaml
 ```
 
+## Development
+
+```bash
+bun install                    # Install dependencies
+bun run dev                    # Run CLI (stub)
+bun test                       # Run tests
+bun run typecheck              # Type check
+bun run test:coverage          # Run with coverage
+```
+
+### Project Structure
+
+```text
+FlowSpec/
+├── src/
+│   ├── types.ts          # Zod schemas for FlowSpec
+│   ├── parser.ts         # YAML parsing (stub)
+│   ├── runner.ts         # Flow execution (stub)
+│   ├── reporter.ts       # Error formatting (stub)
+│   └── index.ts          # CLI entry point
+├── test/
+│   ├── fixtures/
+│   │   ├── pages/        # HTML test fixtures
+│   │   └── flows/        # YAML flow fixtures
+│   └── *.test.ts         # Test files
+├── docs/
+│   └── specification.md  # Full framework design
+└── specs/                # User flow specs (immutable)
+```
+
 ## Documentation
 
 - [Full Specification](docs/specification.md) - Complete framework design and rationale

@@ -1,0 +1,8 @@
+name: invalid-step-type
+description: This flow contains an unknown step type
+steps:
+  - visit: /home
+  - hover: Some Element
+  - click: Button
+expect:
+  - visible: Home
