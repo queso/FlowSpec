@@ -54,7 +54,7 @@ bun run test:coverage          # Run with coverage
 
 ### Project Structure
 
-```
+```text
 FlowSpec/
 ├── src/
 │   ├── types.ts          # Zod schemas for FlowSpec

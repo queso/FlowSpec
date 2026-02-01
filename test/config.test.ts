@@ -21,7 +21,7 @@ describe('Project Configuration', () => {
 
     // Check key dependencies
     expect(pkg.dependencies['agent-browser']).toBeDefined();
-    expect(pkg.dependencies['express']).toBeDefined();
+    expect(pkg.devDependencies['express']).toBeDefined();
     expect(pkg.devDependencies['typescript']).toBeDefined();
     expect(pkg.devDependencies['vitest']).toBeDefined();
   });

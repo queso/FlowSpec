@@ -7,7 +7,7 @@ Implement the FlowSpec command-line interface that parses YAML flow specificatio
 ## Goals
 
 - Implement YAML parser that validates specs against the FlowSpec schema
-- Implement deterministic runner using Playwright MCP for browser automation
+- Implement deterministic runner using agent-browser CLI for browser automation
 - Implement reporter that formats errors with actionable context
 - Wire up CLI entry point with `run` command
 

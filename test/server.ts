@@ -83,8 +83,16 @@ export function createTestServer(options: TestServerOptions = {}): TestServer {
           return;
         }
 
-        httpServer.close(() => {
-          httpServer = null;
+        const server = httpServer;
+        httpServer = null;
+
+        // Force close after timeout to handle hanging connections
+        const forceCloseTimeout = setTimeout(() => {
+          server.closeAllConnections?.();
+        }, 5000);
+
+        server.close(() => {
+          clearTimeout(forceCloseTimeout);
           resolve();
         });
       });

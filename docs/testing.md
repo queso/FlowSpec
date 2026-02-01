@@ -8,7 +8,7 @@ This inverts the typical relationship: normally specs test an application. Here,
 
 ## Test Architecture
 
-```
+```text
 test/
 ├── fixtures/
 │   ├── pages/           # Static HTML pages with predictable content

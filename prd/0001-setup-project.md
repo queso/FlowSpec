@@ -35,7 +35,7 @@ Set up the FlowSpec project with Bun runtime, TypeScript, and testing infrastruc
 
 ## Project Structure
 
-```
+```text
 FlowSpec/
 ├── package.json
 ├── tsconfig.json
