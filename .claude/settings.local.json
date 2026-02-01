@@ -1,7 +1,39 @@
 {
+  "env": {
+    "ATEAM_PROJECT_ID": "flowspec",
+    "ATEAM_API_URL": "http://kanban-viewer.orb.local:3000"
+  },
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(mkdir *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Write(src/**)",
+      "Edit(src/**)",
+      "mcp__plugin_ai-team_ateam__mission_current",
+      "mcp__plugin_ai-team_ateam__mission_init",
+      "mcp__plugin_ai-team_ateam__item_create",
+      "mcp__plugin_ai-team_ateam__deps_check",
+      "mcp__plugin_ai-team_ateam__log",
+      "mcp__plugin_ai-team_ateam__item_list",
+      "mcp__plugin_ai-team_ateam__item_update",
+      "mcp__plugin_ai-team_ateam__board_move",
+      "mcp__plugin_ai-team_ateam__mission_precheck",
+      "mcp__plugin_ai-team_ateam__board_read",
+      "mcp__plugin_ai-team_ateam__board_claim",
+      "mcp__plugin_ai-team_ateam__agent_start",
+      "mcp__plugin_ai-team_ateam__agent_stop",
+      "mcp__plugin_ai-team_ateam__board_release",
+      "Bash(bun test:*)",
+      "Bash(bun install:*)",
+      "Bash(bun run dev:*)",
+      "Bash(bun run typecheck:*)",
+      "Bash(bunx agent-browser install:*)",
+      "Bash(bun run test:coverage:*)",
+      "mcp__plugin_ai-team_ateam__mission_postcheck",
+      "Bash(ls:*)",
+      "Bash(bash:*)"
     ]
   }
 }

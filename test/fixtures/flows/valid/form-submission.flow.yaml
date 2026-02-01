@@ -1,0 +1,13 @@
+name: contact-form-submission
+description: User can submit the contact form with all field types
+steps:
+  - visit: /forms
+  - fill:
+      Name: John Doe
+      Message: This is a test message for the contact form.
+  - select:
+      Category: Technical Support
+  - click: Submit
+expect:
+  - visible: Thank you
+  - not_visible: Error

@@ -1,0 +1,5 @@
+description: This flow is missing the required name field
+steps:
+  - visit: /home
+expect:
+  - visible: Home

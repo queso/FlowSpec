@@ -1,0 +1,5 @@
+name: empty-steps-flow
+description: This flow has an empty steps array
+steps: []
+expect:
+  - visible: Home

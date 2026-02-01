@@ -1,0 +1,11 @@
+name: user-login
+description: User can log in with valid credentials
+steps:
+  - visit: /login
+  - fill:
+      Email: user@example.com
+      Password: secretpassword
+  - click: Sign In
+expect:
+  - url: /dashboard
+  - visible: Welcome back
