@@ -9,6 +9,9 @@ bun install              # Install dependencies
 bun test                 # Run all tests
 bun test test/types      # Run single test file (partial match)
 bun run typecheck        # Type check with tsc
+bun run lint             # Lint with Biome
+bun run lint:fix         # Auto-fix lint issues
+bun run format           # Format code with Biome
 bun run dev              # Run CLI entry point
 bun run test:coverage    # Run tests with coverage
 ```

@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 // Action schemas - each action type is a distinct object shape
 const VisitActionSchema = z.object({ visit: z.string() }).strict();
@@ -23,7 +23,9 @@ export type StepAction = z.infer<typeof StepActionSchema>;
 const UrlAssertionSchema = z.object({ url: z.string() }).strict();
 const VisibleAssertionSchema = z.object({ visible: z.string() }).strict();
 const MatchesAssertionSchema = z.object({ matches: z.string() }).strict();
-const NotVisibleAssertionSchema = z.object({ not_visible: z.string() }).strict();
+const NotVisibleAssertionSchema = z
+  .object({ not_visible: z.string() })
+  .strict();
 
 /**
  * Schema for step assertions: url, visible, matches, not_visible

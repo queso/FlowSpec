@@ -5,42 +5,44 @@
  * and throw "Not implemented" errors.
  */
 
-import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 
-const SRC_DIR = join(__dirname, '..', 'src');
+const SRC_DIR = join(__dirname, "..", "src");
 
-describe('Source Module Stubs', () => {
-  it('should have all required stub files', () => {
-    expect(existsSync(join(SRC_DIR, 'parser.ts'))).toBe(true);
-    expect(existsSync(join(SRC_DIR, 'runner.ts'))).toBe(true);
-    expect(existsSync(join(SRC_DIR, 'reporter.ts'))).toBe(true);
-    expect(existsSync(join(SRC_DIR, 'index.ts'))).toBe(true);
+describe("Source Module Stubs", () => {
+  it("should have all required stub files", () => {
+    expect(existsSync(join(SRC_DIR, "parser.ts"))).toBe(true);
+    expect(existsSync(join(SRC_DIR, "runner.ts"))).toBe(true);
+    expect(existsSync(join(SRC_DIR, "reporter.ts"))).toBe(true);
+    expect(existsSync(join(SRC_DIR, "index.ts"))).toBe(true);
   });
 
-  it('parser should export parseFlow function that throws', async () => {
-    const { parseFlow } = await import('../src/parser');
-    expect(typeof parseFlow).toBe('function');
-    expect(() => parseFlow('test: yaml')).toThrow('Not implemented');
+  it("parser should export parseFlow function that throws", async () => {
+    const { parseFlow } = await import("../src/parser");
+    expect(typeof parseFlow).toBe("function");
+    expect(() => parseFlow("test: yaml")).toThrow("Not implemented");
   });
 
-  it('runner should export runFlow function that throws', async () => {
-    const { runFlow } = await import('../src/runner');
-    expect(typeof runFlow).toBe('function');
+  it("runner should export runFlow function that throws", async () => {
+    const { runFlow } = await import("../src/runner");
+    expect(typeof runFlow).toBe("function");
 
     const mockFlowSpec = {
-      name: 'test',
-      description: 'test flow',
-      steps: [{ visit: '/test' }],
-      expect: [{ visible: 'Test' }],
+      name: "test",
+      description: "test flow",
+      steps: [{ visit: "/test" }],
+      expect: [{ visible: "Test" }],
     };
-    await expect(runFlow(mockFlowSpec)).rejects.toThrow('Not implemented');
+    await expect(runFlow(mockFlowSpec)).rejects.toThrow("Not implemented");
   });
 
-  it('reporter should export formatError function that throws', async () => {
-    const { formatError } = await import('../src/reporter');
-    expect(typeof formatError).toBe('function');
-    expect(() => formatError({ message: 'Test error' })).toThrow('Not implemented');
+  it("reporter should export formatError function that throws", async () => {
+    const { formatError } = await import("../src/reporter");
+    expect(typeof formatError).toBe("function");
+    expect(() => formatError({ message: "Test error" })).toThrow(
+      "Not implemented",
+    );
   });
 });

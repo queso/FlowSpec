@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Biome linter and formatter** (`biome.json`)
+  - Fast Rust-based linting and formatting
+  - Replaces ESLint + Prettier with single tool
+  - Scripts: `lint`, `lint:fix`, `format`
+
 - **Project infrastructure** (PRD-0001)
   - Bun/TypeScript project with strict configuration
   - Vitest test runner with coverage support
