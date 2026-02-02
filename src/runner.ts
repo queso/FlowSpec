@@ -153,7 +153,9 @@ function findFieldRefByLabel(
  * Execute a visit step
  */
 function executeVisit(url: string, baseUrl: string, session: string): void {
-  const fullUrl = url.startsWith("http") ? url : `${baseUrl}${url}`;
+  const fullUrl = url.startsWith("http")
+    ? url
+    : new URL(url, baseUrl).toString();
   execBrowser(`open ${shellEscape(fullUrl)}`, session);
 }
 
@@ -307,10 +309,18 @@ function executeAssertion(
       };
     }
   } else if ("matches" in assertion) {
-    const result = assertMatches(assertion.matches, session);
-    if (!result.passed) {
+    try {
+      const result = assertMatches(assertion.matches, session);
+      if (!result.passed) {
+        return {
+          message: `Matches assertion failed: pattern "${assertion.matches}" did not match page content`,
+          assertion,
+        };
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
-        message: `Matches assertion failed: pattern "${assertion.matches}" did not match page content`,
+        message: `Matches assertion failed: invalid pattern "${assertion.matches}" - ${message}`,
         assertion,
       };
     }

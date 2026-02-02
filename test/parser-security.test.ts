@@ -121,13 +121,21 @@ expect:
       const yaml = `
 name: merge-test
 description: Test with merge
+defaults: &defaults
+  Email: test@example.com
+  Password: secret123
 steps:
-  - visit: /home
+  - fill:
+      <<: *defaults
 expect:
   - visible: Welcome
 `;
       const result = parseFlowSpec(yaml);
       expect(result.name).toBe("merge-test");
+      // Verify the merge worked - the fill step should have the merged fields
+      const fillStep = result.steps[0] as { fill: Record<string, string> };
+      expect(fillStep.fill.Email).toBe("test@example.com");
+      expect(fillStep.fill.Password).toBe("secret123");
     });
   });
 

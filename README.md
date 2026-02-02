@@ -46,7 +46,7 @@ flowspec --help
 ### Exit Codes
 
 | Code | Meaning |
-|------|---------|
+| ---- | ------- |
 | 0 | All flows passed |
 | 1 | One or more flows failed |
 | 2 | Parse error (invalid YAML or schema) |
@@ -72,7 +72,7 @@ expect:
 ### Step Actions
 
 | Action | Description | Example |
-|--------|-------------|---------|
+| ------ | ----------- | ------- |
 | `visit` | Navigate to a URL (relative or absolute) | `visit: /login` |
 | `click` | Click element by visible text | `click: "Sign In"` |
 | `fill` | Fill form fields by label | `fill: { Email: user@example.com }` |
@@ -81,7 +81,7 @@ expect:
 ### Assertions
 
 | Assertion | Description | Example |
-|-----------|-------------|---------|
+| --------- | ----------- | ------- |
 | `url` | Check current URL contains value | `url: /dashboard` |
 | `visible` | Check text is visible on page | `visible: "Welcome back"` |
 | `matches` | Check page content matches regex | `matches: "Order #\\d+"` |
@@ -114,6 +114,7 @@ expect:
 
 ```bash
 bun install                    # Install dependencies
+bun run build                  # Build CLI (required for bun link)
 bun link                       # Link CLI locally as 'flowspec'
 bun test                       # Run tests
 bun run typecheck              # Type check

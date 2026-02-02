@@ -6,11 +6,12 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "flowspec": "./src/index.ts"
+    "flowspec": "./dist/index.js"
   },
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "tsc",
+    "prepublishOnly": "bun run build",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "typecheck": "tsc --noEmit",
