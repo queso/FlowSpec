@@ -4,12 +4,12 @@
  * Serves static HTML files from the fixtures directory for browser-based tests.
  */
 
-import express, { type Express } from 'express';
-import { join } from 'node:path';
-import type { Server } from 'node:http';
+import type { Server } from "node:http";
+import { join } from "node:path";
+import express, { type Express } from "express";
 
 const DEFAULT_PORT = 3456;
-const DEFAULT_FIXTURES_DIR = join(__dirname, 'fixtures', 'pages');
+const DEFAULT_FIXTURES_DIR = join(__dirname, "fixtures", "pages");
 
 /**
  * Configuration options for the test server
@@ -61,13 +61,13 @@ export function createTestServer(options: TestServerOptions = {}): TestServer {
       return new Promise((resolve, reject) => {
         httpServer = app.listen(port);
 
-        httpServer.once('listening', () => {
+        httpServer.once("listening", () => {
           resolve();
         });
 
-        httpServer.once('error', (error: NodeJS.ErrnoException) => {
+        httpServer.once("error", (error: NodeJS.ErrnoException) => {
           httpServer = null;
-          if (error.code === 'EADDRINUSE') {
+          if (error.code === "EADDRINUSE") {
             reject(new Error(`Port ${port} is already in use`));
           } else {
             reject(error);
@@ -114,7 +114,7 @@ function resolvePort(explicitPort?: number): number {
   const envPort = process.env.TEST_SERVER_PORT;
   if (envPort) {
     const parsed = parseInt(envPort, 10);
-    if (!isNaN(parsed)) {
+    if (!Number.isNaN(parsed)) {
       return parsed;
     }
   }
@@ -129,13 +129,15 @@ function createExpressApp(fixturesDir: string): Express {
   const app = express();
 
   // Serve static files with correct MIME types
-  app.use(express.static(fixturesDir, {
-    setHeaders: (res, path) => {
-      if (path.endsWith('.html')) {
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      }
-    },
-  }));
+  app.use(
+    express.static(fixturesDir, {
+      setHeaders: (res, path) => {
+        if (path.endsWith(".html")) {
+          res.setHeader("Content-Type", "text/html; charset=utf-8");
+        }
+      },
+    }),
+  );
 
   return app;
 }

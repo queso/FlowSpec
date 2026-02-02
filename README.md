@@ -11,9 +11,81 @@ AI coding agents can modify both implementation and tests. When a test fails, th
 FlowSpec separates **what your app should do** (immutable specs) from **how it does it** (agent-modifiable code).
 
 - Write user flows in simple YAML
-- Use human-readable labels (accessibility-first, à la React Testing Library)
+- Use human-readable labels (accessibility-first, a la React Testing Library)
 - Protect specs from agent modification via Claude Code hooks
 - Run deterministically in CI or interactively with an agent
+
+## Installation
+
+```bash
+# Install globally
+npm install -g flowspec
+
+# Or with bun
+bun add -g flowspec
+```
+
+Requires [agent-browser](https://github.com/anthropics/agent-browser) for browser automation.
+
+## Usage
+
+```bash
+# Run a single flow file
+flowspec run specs/checkout.flow.yaml
+
+# Run all flows in a directory
+flowspec run specs/
+
+# Specify a custom base URL
+flowspec run specs/ --base-url http://localhost:8080
+
+# Show help
+flowspec --help
+```
+
+### Exit Codes
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | All flows passed |
+| 1 | One or more flows failed |
+| 2 | Parse error (invalid YAML or schema) |
+
+## Flow File Format
+
+Flow files use YAML with a simple structure:
+
+```yaml
+name: user-login
+description: User can log in with valid credentials
+steps:
+  - visit: /login
+  - fill:
+      Email: user@example.com
+      Password: secretpassword
+  - click: Sign In
+expect:
+  - url: /dashboard
+  - visible: Welcome back
+```
+
+### Step Actions
+
+| Action | Description | Example |
+| ------ | ----------- | ------- |
+| `visit` | Navigate to a URL (relative or absolute) | `visit: /login` |
+| `click` | Click element by visible text | `click: "Sign In"` |
+| `fill` | Fill form fields by label | `fill: { Email: user@example.com }` |
+| `select` | Select dropdown option by label | `select: { Country: "United States" }` |
+
+### Assertions
+
+| Assertion | Description | Example |
+| --------- | ----------- | ------- |
+| `url` | Check current URL contains value | `url: /dashboard` |
+| `visible` | Check text is visible on page | `visible: "Welcome back"` |
+| `matches` | Check page content matches regex | `matches: "Order #\\d+"` |
+| `not_visible` | Check text is NOT on page | `not_visible: "Error"` |
 
 ## Quick Example
 
@@ -38,17 +110,17 @@ expect:
   - matches: "Order #\\d+"
 ```
 
-```bash
-npx flowspec run specs/checkout.flow.yaml
-```
-
 ## Development
 
 ```bash
 bun install                    # Install dependencies
-bun run dev                    # Run CLI (stub)
+bun run build                  # Build CLI (required for bun link)
+bun link                       # Link CLI locally as 'flowspec'
 bun test                       # Run tests
 bun run typecheck              # Type check
+bun run lint                   # Lint with Biome
+bun run lint:fix               # Auto-fix lint issues
+bun run format                 # Format with Biome
 bun run test:coverage          # Run with coverage
 ```
 
@@ -58,9 +130,9 @@ bun run test:coverage          # Run with coverage
 FlowSpec/
 ├── src/
 │   ├── types.ts          # Zod schemas for FlowSpec
-│   ├── parser.ts         # YAML parsing (stub)
-│   ├── runner.ts         # Flow execution (stub)
-│   ├── reporter.ts       # Error formatting (stub)
+│   ├── parser.ts         # YAML parsing with Zod validation
+│   ├── runner.ts         # Flow execution via agent-browser
+│   ├── reporter.ts       # Result formatting for terminal
 │   └── index.ts          # CLI entry point
 ├── test/
 │   ├── fixtures/
