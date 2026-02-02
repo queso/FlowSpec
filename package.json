@@ -5,6 +5,9 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "flowspec": "./src/index.ts"
+  },
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "tsc",
