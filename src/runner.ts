@@ -59,10 +59,12 @@ function generateSessionName(): string {
 function execBrowser(command: string, session: string): string {
   try {
     const fullCommand = `agent-browser --session ${session} ${command}`;
-    return execSync(fullCommand, {
+    const result = execSync(fullCommand, {
       encoding: "utf-8",
       timeout: 30000,
+      shell: process.env.SHELL || "/bin/sh",
     });
+    return result;
   } catch (error: unknown) {
     const execError = error as {
       message?: string;
