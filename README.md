@@ -39,6 +39,12 @@ flowspec run specs/
 # Specify a custom base URL
 flowspec run specs/ --base-url http://localhost:8080
 
+# Set assertion retry timeout (default: 5000ms)
+flowspec run specs/ --timeout 10000
+
+# Disable assertion retries (fail immediately)
+flowspec run specs/ --timeout 0
+
 # Show help
 flowspec --help
 ```

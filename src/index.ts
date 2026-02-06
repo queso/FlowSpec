@@ -3,7 +3,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseFlowFile } from "./parser";
 import { formatResult, formatSummary } from "./reporter";
-import { runFlow } from "./runner";
+import { DEFAULT_TIMEOUT, runFlow } from "./runner";
 import type { FlowResult, FlowSpec } from "./types";
 
 const DEFAULT_BASE_URL = "http://localhost:3456";
@@ -11,6 +11,7 @@ const DEFAULT_BASE_URL = "http://localhost:3456";
 interface CliOptions {
   path?: string;
   baseUrl: string;
+  timeout?: number;
   showHelp: boolean;
 }
 
@@ -25,6 +26,7 @@ Arguments:
 
 Options:
   --base-url <url>  Base URL for relative paths (default: http://localhost:3456)
+  --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
   --help            Show help
 
 Exit codes:
@@ -47,6 +49,11 @@ function parseArgs(args: string[]): CliOptions {
       options.showHelp = true;
     } else if (arg === "--base-url" && i + 1 < args.length) {
       options.baseUrl = args[++i];
+    } else if (arg === "--timeout" && i + 1 < args.length) {
+      const timeoutValue = Number.parseInt(args[++i], 10);
+      if (!Number.isNaN(timeoutValue)) {
+        options.timeout = timeoutValue;
+      }
     } else if (!arg.startsWith("-") && !options.path) {
       options.path = arg;
     }
@@ -112,11 +119,12 @@ function parseFlowFiles(filePaths: string[]): {
 async function runFlows(
   parsedFlows: ParsedFlow[],
   baseUrl: string,
+  timeout?: number,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
   for (const { flow } of parsedFlows) {
-    const result = await runFlow(flow, { baseUrl });
+    const result = await runFlow(flow, { baseUrl, timeout });
     console.log(formatResult(result));
     results.push(result);
   }
@@ -179,7 +187,7 @@ async function main(): Promise<void> {
     }
 
     // Run all flows
-    const results = await runFlows(flows, options.baseUrl);
+    const results = await runFlows(flows, options.baseUrl, options.timeout);
 
     // Print summary
     console.log();

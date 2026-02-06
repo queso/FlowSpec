@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Assertion Retry/Polling** (PRD-0004)
+  - Assertions now auto-retry on failure until pass or timeout elapses
+  - `--timeout <ms>` CLI flag to configure retry timeout (default: 5000ms)
+  - `timeout` option in `RunnerOptions` for programmatic control
+  - All assertion types (`visible`, `not_visible`, `matches`, `url`) support retry
+  - `timeout: 0` disables retries for instant failure (useful for tests)
+  - New constants: `DEFAULT_TIMEOUT` (5000ms), `POLL_INTERVAL` (250ms)
+
 - **FlowSpec CLI** (PRD-0002)
   - `flowspec run <path>` command to execute flow specifications
   - `--base-url <url>` option for configuring the target server

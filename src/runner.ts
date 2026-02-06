@@ -12,6 +12,24 @@ import type {
  */
 export interface RunnerOptions {
   baseUrl?: string;
+  timeout?: number;
+}
+
+/**
+ * Default timeout for assertion retries (in milliseconds)
+ */
+export const DEFAULT_TIMEOUT = 5000;
+
+/**
+ * Interval between retry attempts (in milliseconds)
+ */
+export const POLL_INTERVAL = 250;
+
+/**
+ * Sleep for specified milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const DEFAULT_BASE_URL = "http://localhost:3456";
@@ -285,10 +303,10 @@ function assertNotVisible(
 }
 
 /**
- * Execute a single assertion
+ * Check a single assertion once (synchronous single-check)
  * Returns error if assertion fails, undefined if it passes
  */
-function executeAssertion(
+function checkAssertion(
   assertion: StepAssertion,
   session: string,
 ): FlowError | undefined {
@@ -338,6 +356,45 @@ function executeAssertion(
 }
 
 /**
+ * Execute a single assertion with retry/polling
+ * Wraps checkAssertion in a poll loop until pass or timeout
+ * Returns error if assertion fails after all retries, undefined if it passes
+ */
+async function executeAssertion(
+  assertion: StepAssertion,
+  session: string,
+  timeout: number,
+): Promise<FlowError | undefined> {
+  // First check: if it passes, return immediately (zero overhead)
+  let lastError = checkAssertion(assertion, session);
+  if (!lastError) {
+    return undefined;
+  }
+
+  // If timeout is 0, no retry - return the error immediately
+  if (timeout <= 0) {
+    return lastError;
+  }
+
+  // Calculate deadline for retry loop
+  const deadline = Date.now() + timeout;
+
+  // Poll loop: sleep, then re-check until pass or deadline
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL);
+
+    // Re-check assertion (re-fetches page state from browser)
+    lastError = checkAssertion(assertion, session);
+    if (!lastError) {
+      return undefined;
+    }
+  }
+
+  // Timeout reached: return the last error
+  return lastError;
+}
+
+/**
  * Close a browser session
  */
 function closeBrowserSession(session: string): void {
@@ -360,6 +417,7 @@ export async function runFlow(
 ): Promise<FlowResult> {
   const startTime = Date.now();
   const baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
+  const timeout = options?.timeout ?? DEFAULT_TIMEOUT;
   const session = generateSessionName();
 
   try {
@@ -385,9 +443,13 @@ export async function runFlow(
       }
     }
 
-    // Execute all assertions
+    // Execute all assertions with retry/polling
     for (const assertion of flow.expect) {
-      const assertionError = executeAssertion(assertion, session);
+      const assertionError = await executeAssertion(
+        assertion,
+        session,
+        timeout,
+      );
       if (assertionError) {
         return {
           success: false,

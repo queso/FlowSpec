@@ -9,7 +9,12 @@
 
 import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runFlow } from "../src/runner";
+import {
+  DEFAULT_TIMEOUT,
+  POLL_INTERVAL,
+  type RunnerOptions,
+  runFlow,
+} from "../src/runner";
 import type { FlowSpec } from "../src/types";
 import { createTestServer, type TestServer } from "./server";
 
@@ -195,7 +200,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ url: "/dashboard.html" }],
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
@@ -225,7 +233,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ visible: "Dashboard" }],
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
@@ -255,7 +266,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ matches: "Order #\\d{5}" }],
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
@@ -285,7 +299,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ not_visible: "Welcome back" }],
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
@@ -355,7 +372,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ visible: "Sign In" }, { visible: "Not Here" }], // Second should fail
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       expect(result.error?.assertion).toEqual({ visible: "Not Here" });
@@ -369,7 +389,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ url: "/expected-path" }],
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       expect(result.error?.message).toContain("/expected-path");
@@ -383,7 +406,10 @@ describeIfAgentBrowser("Flow Runner", () => {
         expect: [{ url: "/wrong-page" }],
       };
 
-      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
 
       expect(result.success).toBe(false);
       // Error message should mention the actual URL
@@ -427,5 +453,88 @@ describeIfAgentBrowser("Flow Runner", () => {
       expect(typeof result.duration).toBe("number");
       expect(result.duration).toBeGreaterThanOrEqual(0);
     });
+  });
+
+  describe("assertion retry/polling", () => {
+    it("should accept timeout option in RunnerOptions", async () => {
+      const flow: FlowSpec = {
+        name: "timeout-option",
+        description: "Test timeout option is accepted",
+        steps: [{ visit: "/login.html" }],
+        expect: [{ visible: "Sign In" }],
+      };
+
+      // Should accept timeout: 0 option without error
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("should return immediately on failed assertion when timeout is 0", async () => {
+      const flow: FlowSpec = {
+        name: "no-retry",
+        description: "Test that timeout:0 means no retry",
+        steps: [{ visit: "/login.html" }],
+        expect: [{ visible: "Nonexistent Text That Will Never Appear" }],
+      };
+
+      const startTime = Date.now();
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+      const elapsed = Date.now() - startTime;
+
+      expect(result.success).toBe(false);
+      // With timeout:0, should fail immediately without any retry delay
+      // Allow some margin for browser operation but should be much less than DEFAULT_TIMEOUT
+      expect(elapsed).toBeLessThan(DEFAULT_TIMEOUT);
+    });
+  });
+});
+
+/**
+ * Unit tests for assertion retry constants and types
+ * These do not require browser automation
+ */
+describe("Assertion Retry Constants", () => {
+  it("should export DEFAULT_TIMEOUT constant with value 5000", () => {
+    expect(DEFAULT_TIMEOUT).toBe(5000);
+  });
+
+  it("should export POLL_INTERVAL constant with value 250", () => {
+    expect(POLL_INTERVAL).toBe(250);
+  });
+
+  it("should have DEFAULT_TIMEOUT be a multiple of POLL_INTERVAL", () => {
+    // This ensures clean timeout behavior
+    expect(DEFAULT_TIMEOUT % POLL_INTERVAL).toBe(0);
+  });
+});
+
+/**
+ * Type-level tests for RunnerOptions interface
+ * These verify the TypeScript types are correct at compile time
+ */
+describe("RunnerOptions type", () => {
+  it("should allow timeout as optional number parameter", () => {
+    // Type assertions - these will fail to compile if types are wrong
+    const optionsWithTimeout: RunnerOptions = { timeout: 1000 };
+    const optionsWithZeroTimeout: RunnerOptions = { timeout: 0 };
+    const optionsWithoutTimeout: RunnerOptions = {};
+    const optionsWithBoth: RunnerOptions = {
+      baseUrl: "http://localhost",
+      timeout: 500,
+    };
+
+    // Runtime verification that the values are correct
+    expect(optionsWithTimeout.timeout).toBe(1000);
+    expect(optionsWithZeroTimeout.timeout).toBe(0);
+    expect(optionsWithoutTimeout.timeout).toBeUndefined();
+    expect(optionsWithBoth.timeout).toBe(500);
+    expect(optionsWithBoth.baseUrl).toBe("http://localhost");
   });
 });
