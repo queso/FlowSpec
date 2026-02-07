@@ -85,6 +85,7 @@ steps:                          # Ordered user actions
       "Label": "value"
   - select:                     # Select dropdown option by label
       "Label": "option"
+  - wait_for: "Text"            # Wait for text to appear (with retry)
 
 expect:                         # Assertions after steps complete
   - url: "/expected/path"       # Current URL matches
@@ -150,6 +151,9 @@ async function runFlow(flow: Flow) {
         const ref = findRefByLabel(snapshot, label);
         ab(`select ${ref} "${value}"`);
       }
+    } else if (step.wait_for) {
+      // Polls until text appears or timeout
+      await waitForText(step.wait_for, timeout);
     }
   }
 
@@ -201,9 +205,19 @@ your-project/
 
 ## Claude Code Integration
 
+### Quick Start with `flowspec init`
+
+The easiest way to set up FlowSpec protection is with the init command:
+
+```bash
+flowspec init
+```
+
+This creates the necessary hook configuration automatically, along with a sample flow and config file.
+
 ### Hook Configuration
 
-Add to `.claude/settings.json`:
+Add to `.claude/settings.json` (or use `flowspec init`):
 
 ```json
 {

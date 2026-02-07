@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`flowspec init` Command**
+  - Scaffolds new FlowSpec projects with `flowspec init`
+  - Creates `flowspec.config.yaml` with default settings
+  - Creates `specs/` directory with example flow
+  - Sets up `.claude/settings.local.json` with PreToolUse hook to protect specs from AI modification
+  - Updates `package.json` with `test:e2e` script
+
+- **Config File Support**
+  - `flowspec.config.yaml` for project-level configuration
+  - Settings: `baseUrl`, `timeout`, `specsDir`
+  - CLI options override config file values
+  - Config file discovery walks up directory tree
+
+- **`wait_for` Step Type**
+  - New step action: `wait_for: "Text"` waits for text to appear before continuing
+  - Uses same retry/polling logic as assertions (respects `--timeout`)
+  - Useful for async UI updates (e.g., waiting for AI responses, loading states)
+
 - **Assertion Retry/Polling** (PRD-0004)
   - Assertions now auto-retry on failure until pass or timeout elapses
   - `--timeout <ms>` CLI flag to configure retry timeout (default: 5000ms)

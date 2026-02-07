@@ -29,6 +29,21 @@ Requires [agent-browser](https://github.com/anthropics/agent-browser) for browse
 
 ## Usage
 
+### Initialize a New Project
+
+```bash
+# Scaffold a new FlowSpec project
+flowspec init
+```
+
+This creates:
+- `flowspec.config.yaml` - Project configuration
+- `specs/example.flow.yaml` - Sample flow to get started
+- `.claude/settings.local.json` - Hooks to protect specs from AI modification
+- Updates `package.json` with `test:e2e` script
+
+### Run Flows
+
 ```bash
 # Run a single flow file
 flowspec run specs/checkout.flow.yaml
@@ -48,6 +63,18 @@ flowspec run specs/ --timeout 0
 # Show help
 flowspec --help
 ```
+
+### Configuration File
+
+FlowSpec looks for `flowspec.config.yaml` in the current directory or parent directories:
+
+```yaml
+baseUrl: http://localhost:3000
+timeout: 10000
+specsDir: specs/
+```
+
+CLI options override config file values.
 
 ### Exit Codes
 
@@ -83,6 +110,7 @@ expect:
 | `click` | Click element by visible text | `click: "Sign In"` |
 | `fill` | Fill form fields by label | `fill: { Email: user@example.com }` |
 | `select` | Select dropdown option by label | `select: { Country: "United States" }` |
+| `wait_for` | Wait for text to appear (with retry) | `wait_for: "Loading complete"` |
 
 ### Assertions
 
