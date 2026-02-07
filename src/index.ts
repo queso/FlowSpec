@@ -1,33 +1,38 @@
 #!/usr/bin/env bun
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { loadConfig, mergeConfig } from "./config";
+import { formatInitResult, initProject } from "./init";
 import { parseFlowFile } from "./parser";
 import { formatResult, formatSummary } from "./reporter";
 import { DEFAULT_TIMEOUT, runFlow } from "./runner";
 import type { FlowResult, FlowSpec } from "./types";
 
-const DEFAULT_BASE_URL = "http://localhost:3456";
-
 interface CliOptions {
   path?: string;
-  baseUrl: string;
+  baseUrl?: string;
   timeout?: number;
   showHelp: boolean;
 }
 
 function showHelp(): void {
   console.log(`
-Usage: flowspec run <path> [options]
+Usage: flowspec <command> [options]
 
-Run FlowSpec flow files.
+Commands:
+  init              Initialize FlowSpec in the current directory
+  run <path>        Run FlowSpec flow files
 
-Arguments:
-  path              Path to a .flow.yaml file or directory containing flow files
-
-Options:
-  --base-url <url>  Base URL for relative paths (default: http://localhost:3456)
+Run Command Options:
+  --base-url <url>  Base URL for relative paths (default from config or http://localhost:3000)
   --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
   --help            Show help
+
+Init Command:
+  Creates FlowSpec configuration in the current directory:
+    - flowspec.config.yaml (project settings)
+    - specs/example.flow.yaml (sample flow)
+    - .claude/settings.local.json (protects specs from AI edits)
 
 Exit codes:
   0  All flows passed
@@ -38,7 +43,6 @@ Exit codes:
 
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
-    baseUrl: DEFAULT_BASE_URL,
     showHelp: false,
   };
 
@@ -132,6 +136,75 @@ async function runFlows(
   return results;
 }
 
+function handleInitCommand(): void {
+  const result = initProject(process.cwd());
+  console.log(formatInitResult(result));
+  process.exit(result.success ? 0 : 1);
+}
+
+async function handleRunCommand(args: string[]): Promise<void> {
+  const options = parseArgs(args);
+
+  if (options.showHelp) {
+    showHelp();
+    process.exit(0);
+  }
+
+  if (!options.path) {
+    console.error("Error: No path specified");
+    showHelp();
+    process.exit(1);
+  }
+
+  const absolutePath = resolve(options.path);
+
+  if (!existsSync(absolutePath)) {
+    console.error(`Error: Path not found: ${options.path}`);
+    process.exit(1);
+  }
+
+  // Load configuration and merge with CLI options
+  const config = loadConfig();
+  const mergedConfig = mergeConfig(config, {
+    baseUrl: options.baseUrl,
+    timeout: options.timeout,
+  });
+
+  const flowFiles = discoverFlowFiles(options.path);
+
+  if (flowFiles.length === 0) {
+    console.log("No flow files found");
+    process.exit(0);
+  }
+
+  // Parse all flow files first
+  const { flows, errors } = parseFlowFiles(flowFiles);
+
+  // If there are parse errors, report them and exit with code 2
+  if (errors.length > 0) {
+    for (const { filePath, error } of errors) {
+      console.error(`Error parsing ${filePath}:`);
+      console.error(`  ${error}`);
+    }
+    process.exit(2);
+  }
+
+  // Run all flows
+  const results = await runFlows(
+    flows,
+    mergedConfig.baseUrl,
+    mergedConfig.timeout,
+  );
+
+  // Print summary
+  console.log();
+  console.log(formatSummary(results));
+
+  // Exit with appropriate code
+  const allPassed = results.every((r) => r.success);
+  process.exit(allPassed ? 0 : 1);
+}
+
 async function main(): Promise<void> {
   // Skip first two args: "bun" and script path
   const args = process.argv.slice(2);
@@ -145,57 +218,10 @@ async function main(): Promise<void> {
   // Extract the command
   const command = args[0];
 
-  if (command === "run") {
-    const runArgs = args.slice(1);
-    const options = parseArgs(runArgs);
-
-    if (options.showHelp) {
-      showHelp();
-      process.exit(0);
-    }
-
-    if (!options.path) {
-      console.error("Error: No path specified");
-      showHelp();
-      process.exit(1);
-    }
-
-    const absolutePath = resolve(options.path);
-
-    if (!existsSync(absolutePath)) {
-      console.error(`Error: Path not found: ${options.path}`);
-      process.exit(1);
-    }
-
-    const flowFiles = discoverFlowFiles(options.path);
-
-    if (flowFiles.length === 0) {
-      console.log("No flow files found");
-      process.exit(0);
-    }
-
-    // Parse all flow files first
-    const { flows, errors } = parseFlowFiles(flowFiles);
-
-    // If there are parse errors, report them and exit with code 2
-    if (errors.length > 0) {
-      for (const { filePath, error } of errors) {
-        console.error(`Error parsing ${filePath}:`);
-        console.error(`  ${error}`);
-      }
-      process.exit(2);
-    }
-
-    // Run all flows
-    const results = await runFlows(flows, options.baseUrl, options.timeout);
-
-    // Print summary
-    console.log();
-    console.log(formatSummary(results));
-
-    // Exit with appropriate code
-    const allPassed = results.every((r) => r.success);
-    process.exit(allPassed ? 0 : 1);
+  if (command === "init") {
+    handleInitCommand();
+  } else if (command === "run") {
+    await handleRunCommand(args.slice(1));
   } else if (command === "--help" || command === "-h") {
     showHelp();
     process.exit(0);

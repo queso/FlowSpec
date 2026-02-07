@@ -494,6 +494,102 @@ describeIfAgentBrowser("Flow Runner", () => {
       expect(elapsed).toBeLessThan(DEFAULT_TIMEOUT);
     });
   });
+
+  describe("wait_for step", () => {
+    it("should wait for text that is already visible", async () => {
+      const flow: FlowSpec = {
+        name: "wait-for-visible",
+        description: "Wait for text that exists immediately",
+        steps: [{ visit: "/login.html" }, { wait_for: "Sign In" }],
+        expect: [{ visible: "Sign In" }],
+      };
+
+      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("should fail immediately when timeout is 0 and text is not visible", async () => {
+      const flow: FlowSpec = {
+        name: "wait-for-timeout-zero",
+        description: "Fail immediately when text not found with timeout 0",
+        steps: [{ visit: "/login.html" }, { wait_for: "Nonexistent Text" }],
+        expect: [{ visible: "Sign In" }],
+      };
+
+      const startTime = Date.now();
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+      const elapsed = Date.now() - startTime;
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBeDefined();
+      expect(result.error?.step).toBe(1);
+      expect(result.error?.action).toEqual({ wait_for: "Nonexistent Text" });
+      expect(result.error?.message).toContain("Nonexistent Text");
+      // Should fail fast with timeout 0
+      expect(elapsed).toBeLessThan(DEFAULT_TIMEOUT);
+    });
+
+    it("should include timeout in error message when text never appears", async () => {
+      const flow: FlowSpec = {
+        name: "wait-for-timeout-message",
+        description: "Error message should mention timeout",
+        steps: [{ visit: "/login.html" }, { wait_for: "Never Appears" }],
+        expect: [{ visible: "Sign In" }],
+      };
+
+      const customTimeout = 500;
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: customTimeout,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.message).toContain("Timeout");
+      expect(result.error?.message).toContain(`${customTimeout}ms`);
+    });
+
+    it("should be usable in a flow with multiple steps", async () => {
+      const flow: FlowSpec = {
+        name: "wait-for-in-flow",
+        description: "Use wait_for between other steps",
+        steps: [
+          { visit: "/dashboard.html" },
+          { wait_for: "Welcome back" },
+          { click: "Settings" },
+        ],
+        expect: [{ url: "/settings" }],
+      };
+
+      const result = await runFlow(flow, { baseUrl: server.baseUrl });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("should capture step index on wait_for failure", async () => {
+      const flow: FlowSpec = {
+        name: "wait-for-step-index",
+        description: "Step index captured on failure",
+        steps: [
+          { visit: "/login.html" },
+          { wait_for: "Sign In" },
+          { wait_for: "This Will Not Appear" },
+        ],
+        expect: [{ visible: "Sign In" }],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error?.step).toBe(2);
+    });
+  });
 });
 
 /**

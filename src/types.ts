@@ -5,9 +5,10 @@ const VisitActionSchema = z.object({ visit: z.string() }).strict();
 const ClickActionSchema = z.object({ click: z.string() }).strict();
 const FillActionSchema = z.object({ fill: z.record(z.string()) }).strict();
 const SelectActionSchema = z.object({ select: z.record(z.string()) }).strict();
+const WaitForActionSchema = z.object({ wait_for: z.string() }).strict();
 
 /**
- * Schema for step actions: visit, click, fill, select
+ * Schema for step actions: visit, click, fill, select, wait_for
  * Uses discriminated union to ensure exactly one action type per step
  */
 export const StepActionSchema = z.union([
@@ -15,9 +16,19 @@ export const StepActionSchema = z.union([
   ClickActionSchema,
   FillActionSchema,
   SelectActionSchema,
+  WaitForActionSchema,
 ]);
 
 export type StepAction = z.infer<typeof StepActionSchema>;
+
+/**
+ * Type guard for wait_for action
+ */
+export function isWaitForAction(
+  action: StepAction,
+): action is { wait_for: string } {
+  return "wait_for" in action;
+}
 
 // Assertion schemas - each assertion type is a distinct object shape
 const UrlAssertionSchema = z.object({ url: z.string() }).strict();

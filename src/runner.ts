@@ -241,9 +241,67 @@ function executeSelect(
 }
 
 /**
- * Execute a single step
+ * Check if text is visible on the page
+ * Returns undefined if found, or an error message if not found
  */
-function executeStep(step: StepAction, baseUrl: string, session: string): void {
+function checkTextVisible(text: string, session: string): string | undefined {
+  const content = getPageContent(session);
+  if (content.includes(text)) {
+    return undefined;
+  }
+  const currentUrl = getCurrentUrl(session);
+  return `Text "${text}" not found on ${currentUrl}`;
+}
+
+/**
+ * Execute a wait_for step with retry/polling
+ * Waits until the specified text appears on the page
+ */
+async function executeWaitFor(
+  text: string,
+  session: string,
+  timeout: number,
+): Promise<void> {
+  // First check: if text is visible, return immediately
+  let lastError = checkTextVisible(text, session);
+  if (!lastError) {
+    return;
+  }
+
+  // If timeout is 0, fail immediately
+  if (timeout <= 0) {
+    throw new Error(lastError);
+  }
+
+  // Calculate deadline for retry loop
+  const deadline = Date.now() + timeout;
+
+  // Poll loop: sleep, then re-check until found or deadline
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL);
+
+    lastError = checkTextVisible(text, session);
+    if (!lastError) {
+      return;
+    }
+  }
+
+  // Timeout reached: throw the last error
+  throw new Error(
+    `Timeout waiting for text "${text}" to appear (waited ${timeout}ms)`,
+  );
+}
+
+/**
+ * Execute a single step
+ * Returns a Promise to handle async steps like wait_for
+ */
+async function executeStep(
+  step: StepAction,
+  baseUrl: string,
+  session: string,
+  timeout: number,
+): Promise<void> {
   if ("visit" in step) {
     executeVisit(step.visit, baseUrl, session);
   } else if ("click" in step) {
@@ -252,6 +310,8 @@ function executeStep(step: StepAction, baseUrl: string, session: string): void {
     executeFill(step.fill, session);
   } else if ("select" in step) {
     executeSelect(step.select, session);
+  } else if ("wait_for" in step) {
+    await executeWaitFor(step.wait_for, session, timeout);
   }
 }
 
@@ -428,7 +488,7 @@ export async function runFlow(
       const step = flow.steps[stepIndex];
 
       try {
-        executeStep(step, baseUrl, session);
+        await executeStep(step, baseUrl, session, timeout);
       } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);

@@ -4,6 +4,7 @@ import {
   FlowErrorSchema,
   FlowResultSchema,
   FlowSpecSchema,
+  isWaitForAction,
   StepActionSchema,
   StepAssertionSchema,
 } from "../src/types";
@@ -17,7 +18,7 @@ describe("FlowSpec Types", () => {
     expect(FlowErrorSchema instanceof z.ZodType).toBe(true);
   });
 
-  it("StepAction should validate visit, click, fill, and select", () => {
+  it("StepAction should validate visit, click, fill, select, and wait_for", () => {
     expect(StepActionSchema.safeParse({ visit: "/login" }).success).toBe(true);
     expect(StepActionSchema.safeParse({ click: "Submit" }).success).toBe(true);
     expect(
@@ -27,7 +28,20 @@ describe("FlowSpec Types", () => {
     expect(
       StepActionSchema.safeParse({ select: { Country: "US" } }).success,
     ).toBe(true);
+    expect(
+      StepActionSchema.safeParse({ wait_for: "Loading complete" }).success,
+    ).toBe(true);
     expect(StepActionSchema.safeParse({}).success).toBe(false);
+  });
+
+  it("isWaitForAction should correctly identify wait_for actions", () => {
+    expect(isWaitForAction({ wait_for: "Some Text" })).toBe(true);
+    expect(isWaitForAction({ visit: "/login" })).toBe(false);
+    expect(isWaitForAction({ click: "Submit" })).toBe(false);
+    expect(isWaitForAction({ fill: { Email: "test@example.com" } })).toBe(
+      false,
+    );
+    expect(isWaitForAction({ select: { Country: "US" } })).toBe(false);
   });
 
   it("StepAssertion should validate url, visible, matches, and not_visible", () => {
@@ -65,6 +79,21 @@ describe("FlowSpec Types", () => {
       FlowSpecSchema.safeParse({ name: "test", description: "test", steps: [] })
         .success,
     ).toBe(false);
+  });
+
+  it("FlowSpec should validate flow with wait_for steps", () => {
+    const flowWithWaitFor = {
+      name: "async-flow",
+      description: "Flow that waits for async content",
+      steps: [
+        { visit: "/app" },
+        { click: "Load Data" },
+        { wait_for: "Data loaded" },
+        { click: "View Details" },
+      ],
+      expect: [{ visible: "Details Panel" }],
+    };
+    expect(FlowSpecSchema.safeParse(flowWithWaitFor).success).toBe(true);
   });
 
   it("FlowResult should validate success and failure cases", () => {
