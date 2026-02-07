@@ -8,6 +8,13 @@
   "bin": {
     "flowspec": "./dist/index.js"
   },
+  "files": ["dist"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/queso/FlowSpec"
+  },
+  "keywords": ["testing", "e2e", "flow", "specs", "yaml", "claude", "ai"],
+  "author": "Josh Owens",
   "scripts": {
     "dev": "bun run src/index.ts",
     "build": "tsc",
