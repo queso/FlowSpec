@@ -39,8 +39,10 @@ flowspec init
 This creates:
 - `flowspec.config.yaml` - Project configuration
 - `specs/example.flow.yaml` - Sample flow to get started
-- `.claude/settings.local.json` - Hooks to protect specs from AI modification
+- `.claude/settings.local.json` - PreToolUse hook to protect specs from AI modification
 - Updates `package.json` with `test:e2e` script
+
+Running `init` again is safe: existing files are skipped, and the protection hook is merged into an existing `settings.local.json` without overwriting your other settings.
 
 ### Run Flows
 

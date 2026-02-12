@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-02-12
+
+### Fixed
+
+- Fix Claude Code hook format in `flowspec init` to use correct `command_name[]` array schema with `{ matcher, hooks: [{ type, command }] }` instead of the old `{ matcher: { tool, path }, command }` format
+- `flowspec init` now merges the FlowSpec protection hook into existing `.claude/settings.local.json` instead of skipping the file entirely, so users who already ran init get the corrected hook on re-init
+
+### Added
+
+- Export `FLOWSPEC_HOOK_MARKER` and `FLOWSPEC_PRETOOLUSE_HOOK` constants from `src/init.ts`
+- New `merged` field on `InitFileResult` to indicate when a hook was merged into existing settings (vs created or skipped)
+- Graceful handling of unparseable `.claude/settings.local.json` (file is preserved, init reports skipped)
+
 ## [0.1.0] - 2026-02-07
 
 ### Added

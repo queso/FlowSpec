@@ -20,6 +20,7 @@ import {
   DEFAULT_CLAUDE_SETTINGS_CONTENT,
   DEFAULT_CONFIG_CONTENT,
   DEFAULT_EXAMPLE_FLOW_CONTENT,
+  FLOWSPEC_HOOK_MARKER,
   formatInitResult,
   initProject,
 } from "../src/init";
@@ -123,10 +124,16 @@ describe("initProject", () => {
       const content = readFileSync(settingsPath, "utf-8");
       expect(content).toBe(DEFAULT_CLAUDE_SETTINGS_CONTENT);
 
-      // Verify it's valid JSON
+      // Verify it's valid JSON with new hook format
       const parsed = JSON.parse(content);
       expect(parsed.hooks).toBeDefined();
-      expect(parsed.hooks.PreToolUse).toBeDefined();
+      expect(parsed.hooks.PreToolUse).toBeInstanceOf(Array);
+
+      const hook = parsed.hooks.PreToolUse[0];
+      expect(hook.matcher).toBe("Edit|Write");
+      expect(hook.hooks).toBeInstanceOf(Array);
+      expect(hook.hooks[0].type).toBe("command");
+      expect(hook.hooks[0].command).toContain(FLOWSPEC_HOOK_MARKER);
     });
 
     it("should create specs directory if it does not exist", () => {
@@ -186,7 +193,7 @@ describe("initProject", () => {
       expect(content).toBe(existingContent);
     });
 
-    it("should not overwrite existing .claude/settings.local.json", () => {
+    it("should merge hook into existing .claude/settings.local.json", () => {
       mkdirSync(join(tempDir, ".claude"), { recursive: true });
       const settingsPath = join(tempDir, ".claude", "settings.local.json");
       const existingContent = '{"custom": "settings"}';
@@ -199,26 +206,113 @@ describe("initProject", () => {
       const settingsResult = result.files.find((f) =>
         f.path.endsWith("settings.local.json"),
       );
-      expect(settingsResult?.skipped).toBe(true);
+      expect(settingsResult?.merged).toBe(true);
 
-      // Content should be unchanged
-      const content = readFileSync(settingsPath, "utf-8");
-      expect(content).toBe(existingContent);
+      // Original keys should be preserved, hook should be added
+      const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(parsed.custom).toBe("settings");
+      expect(parsed.hooks.PreToolUse).toBeInstanceOf(Array);
+      expect(parsed.hooks.PreToolUse).toHaveLength(1);
+      expect(parsed.hooks.PreToolUse[0].matcher).toBe("Edit|Write");
     });
 
     it("should be safe to run multiple times", () => {
-      // First run
+      // First run creates 3 files (config, example flow, settings)
       const result1 = initProject(tempDir);
       expect(result1.success).toBe(true);
       expect(result1.files.filter((f) => f.created).length).toBe(3);
 
-      // Second run
+      // Second run: all non-package.json files are skipped (hook already present)
       const result2 = initProject(tempDir);
       expect(result2.success).toBe(true);
-      expect(
-        result2.files.filter((f) => f.skipped).length,
-      ).toBeGreaterThanOrEqual(3);
+
+      const nonPkgFiles = result2.files.filter(
+        (f) => !f.path.endsWith("package.json"),
+      );
+      for (const file of nonPkgFiles) {
+        expect(file.skipped).toBe(true);
+      }
       expect(result2.files.filter((f) => f.created).length).toBe(0);
+      expect(result2.files.filter((f) => f.merged).length).toBe(0);
+    });
+
+    it("should skip merge when flowspec hook already present", () => {
+      mkdirSync(join(tempDir, ".claude"), { recursive: true });
+      const settingsPath = join(tempDir, ".claude", "settings.local.json");
+      // Write settings that already contain the hook with the marker
+      const existing = {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Edit|Write",
+              hooks: [
+                {
+                  type: "command",
+                  command: `some-prefix ${FLOWSPEC_HOOK_MARKER} some-suffix`,
+                },
+              ],
+            },
+          ],
+        },
+      };
+      writeFileSync(settingsPath, JSON.stringify(existing, null, 2));
+
+      const result = initProject(tempDir);
+
+      expect(result.success).toBe(true);
+      const settingsResult = result.files.find((f) =>
+        f.path.endsWith("settings.local.json"),
+      );
+      expect(settingsResult?.skipped).toBe(true);
+    });
+
+    it("should append hook to existing PreToolUse array", () => {
+      mkdirSync(join(tempDir, ".claude"), { recursive: true });
+      const settingsPath = join(tempDir, ".claude", "settings.local.json");
+      // Write settings with another PreToolUse hook (not ours)
+      const existing = {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash",
+              hooks: [{ type: "command", command: "echo other-hook" }],
+            },
+          ],
+        },
+      };
+      writeFileSync(settingsPath, JSON.stringify(existing, null, 2));
+
+      const result = initProject(tempDir);
+
+      expect(result.success).toBe(true);
+      const settingsResult = result.files.find((f) =>
+        f.path.endsWith("settings.local.json"),
+      );
+      expect(settingsResult?.merged).toBe(true);
+
+      const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(parsed.hooks.PreToolUse).toHaveLength(2);
+      expect(parsed.hooks.PreToolUse[0].matcher).toBe("Bash");
+      expect(parsed.hooks.PreToolUse[1].matcher).toBe("Edit|Write");
+    });
+
+    it("should handle unparseable settings.local.json gracefully", () => {
+      mkdirSync(join(tempDir, ".claude"), { recursive: true });
+      const settingsPath = join(tempDir, ".claude", "settings.local.json");
+      const invalidJson = "{ not valid json !!!";
+      writeFileSync(settingsPath, invalidJson);
+
+      const result = initProject(tempDir);
+
+      expect(result.success).toBe(true);
+      const settingsResult = result.files.find((f) =>
+        f.path.endsWith("settings.local.json"),
+      );
+      expect(settingsResult?.skipped).toBe(true);
+
+      // File content should be unchanged
+      const content = readFileSync(settingsPath, "utf-8");
+      expect(content).toBe(invalidJson);
     });
   });
 
@@ -420,6 +514,25 @@ describe("formatInitResult", () => {
     expect(output).toContain("Next steps:");
     expect(output).toContain("flowspec run");
   });
+
+  it("should format merged files", () => {
+    const result = {
+      success: true,
+      files: [
+        {
+          path: "/project/.claude/settings.local.json",
+          created: false,
+          skipped: false,
+          merged: true,
+        },
+      ],
+    };
+
+    const output = formatInitResult(result);
+
+    expect(output).toContain("Merged");
+    expect(output).toContain("FlowSpec hook");
+  });
 });
 
 describe("CLI init command", () => {
@@ -502,12 +615,11 @@ describe("default file contents validation", () => {
 
     expect(parsed.hooks).toBeDefined();
     expect(parsed.hooks.PreToolUse).toBeInstanceOf(Array);
-    expect(parsed.hooks.PreToolUse[0].matcher).toBeDefined();
-    expect(parsed.hooks.PreToolUse[0].matcher.tool).toContain("Edit");
-    expect(parsed.hooks.PreToolUse[0].matcher.tool).toContain("Write");
-    expect(parsed.hooks.PreToolUse[0].matcher.path).toBe(
-      "specs/**/*.flow.yaml",
-    );
-    expect(parsed.hooks.PreToolUse[0].command).toContain("exit 1");
+
+    const hook = parsed.hooks.PreToolUse[0];
+    expect(hook.matcher).toBe("Edit|Write");
+    expect(hook.hooks).toBeInstanceOf(Array);
+    expect(hook.hooks[0].type).toBe("command");
+    expect(hook.hooks[0].command).toContain(FLOWSPEC_HOOK_MARKER);
   });
 });

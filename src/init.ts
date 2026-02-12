@@ -8,6 +8,7 @@ export interface InitFileResult {
   path: string;
   created: boolean;
   skipped: boolean;
+  merged?: boolean;
   error?: string;
 }
 
@@ -39,17 +40,31 @@ expect:
 `;
 
 /**
+ * Marker string used to detect if the FlowSpec hook is already present
+ */
+export const FLOWSPEC_HOOK_MARKER = "Flow specs are immutable";
+
+/**
+ * PreToolUse hook with correct Claude Code hooks schema
+ */
+export const FLOWSPEC_PRETOOLUSE_HOOK = {
+  matcher: "Edit|Write",
+  hooks: [
+    {
+      type: "command",
+      command: `node -e "const j=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));if(/\\bspecs\\/.*\\.flow\\.yaml$/.test(j.tool_input?.file_path||'')){console.log(JSON.stringify({decision:'block',reason:'Flow specs are immutable. Fix the implementation, not the spec.'}))}"`,
+    },
+  ],
+};
+
+/**
  * Default content for Claude settings to protect specs
  */
-export const DEFAULT_CLAUDE_SETTINGS_CONTENT = `{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": { "tool": ["Edit", "Write"], "path": "specs/**/*.flow.yaml" },
-      "command": "echo '❌ Flow specs are immutable. Fix the implementation, not the spec.' && exit 1"
-    }]
-  }
-}
-`;
+export const DEFAULT_CLAUDE_SETTINGS_CONTENT = `${JSON.stringify(
+  { hooks: { PreToolUse: [FLOWSPEC_PRETOOLUSE_HOOK] } },
+  null,
+  2,
+)}\n`;
 
 /**
  * Safely create a directory if it doesn't exist
@@ -147,6 +162,96 @@ function updatePackageJson(projectDir: string): InitFileResult {
 }
 
 /**
+ * Check if a parsed settings object already contains the FlowSpec hook
+ */
+function hasFlowSpecHook(settings: Record<string, unknown>): boolean {
+  const hooks = settings.hooks as Record<string, unknown> | undefined;
+  if (!hooks || typeof hooks !== "object") return false;
+
+  const preToolUse = hooks.PreToolUse;
+  if (!Array.isArray(preToolUse)) return false;
+
+  return preToolUse.some((entry: unknown) => {
+    if (!entry || typeof entry !== "object") return false;
+    const nested = (entry as Record<string, unknown>).hooks;
+    if (!Array.isArray(nested)) return false;
+    return nested.some(
+      (h: unknown) =>
+        h &&
+        typeof h === "object" &&
+        typeof (h as Record<string, unknown>).command === "string" &&
+        ((h as Record<string, unknown>).command as string).includes(
+          FLOWSPEC_HOOK_MARKER,
+        ),
+    );
+  });
+}
+
+/**
+ * Ensure the Claude settings file contains the FlowSpec protection hook.
+ * Creates the file if missing, merges the hook if the file exists but lacks it.
+ */
+function ensureClaudeHook(projectDir: string): InitFileResult {
+  const settingsPath = join(projectDir, ".claude", "settings.local.json");
+  const result: InitFileResult = {
+    path: settingsPath,
+    created: false,
+    skipped: false,
+  };
+
+  try {
+    if (!existsSync(settingsPath)) {
+      // File doesn't exist - create with defaults
+      const parentDir = dirname(settingsPath);
+      ensureDirectory(parentDir);
+      writeFileSync(settingsPath, DEFAULT_CLAUDE_SETTINGS_CONTENT, "utf-8");
+      result.created = true;
+      return result;
+    }
+
+    // File exists - try to parse and merge
+    const content = readFileSync(settingsPath, "utf-8");
+    let settings: Record<string, unknown>;
+    try {
+      settings = JSON.parse(content) as Record<string, unknown>;
+    } catch {
+      // Can't parse - skip silently to preserve the file
+      result.skipped = true;
+      return result;
+    }
+
+    // Check if hook is already present
+    if (hasFlowSpecHook(settings)) {
+      result.skipped = true;
+      return result;
+    }
+
+    // Merge hook into existing settings
+    if (!settings.hooks || typeof settings.hooks !== "object") {
+      settings.hooks = {};
+    }
+    const hooks = settings.hooks as Record<string, unknown>;
+
+    if (!Array.isArray(hooks.PreToolUse)) {
+      hooks.PreToolUse = [];
+    }
+    (hooks.PreToolUse as unknown[]).push(FLOWSPEC_PRETOOLUSE_HOOK);
+
+    writeFileSync(
+      settingsPath,
+      `${JSON.stringify(settings, null, 2)}\n`,
+      "utf-8",
+    );
+    result.merged = true;
+  } catch (error) {
+    result.error =
+      error instanceof Error ? error.message : "Unknown error occurred";
+  }
+
+  return result;
+}
+
+/**
  * Initialize FlowSpec in a project directory
  * Creates configuration files and example flow
  *
@@ -170,11 +275,8 @@ export function initProject(projectDir: string = process.cwd()): InitResult {
   );
   files.push(exampleFlowResult);
 
-  // 3. Create .claude/settings.local.json
-  const claudeSettingsResult = createFileIfNotExists(
-    join(projectDir, ".claude", "settings.local.json"),
-    DEFAULT_CLAUDE_SETTINGS_CONTENT,
-  );
+  // 3. Create or merge .claude/settings.local.json
+  const claudeSettingsResult = ensureClaudeHook(projectDir);
   files.push(claudeSettingsResult);
 
   // 4. Update package.json if it exists
@@ -211,6 +313,8 @@ export function formatInitResult(result: InitResult): string {
         continue;
       }
       lines.push(`· Skipped ${displayPath} (already exists)`);
+    } else if (file.merged) {
+      lines.push(`✓ Merged FlowSpec hook into ${displayPath}`);
     } else if (file.created) {
       if (file.path.endsWith("package.json")) {
         lines.push(`✓ ${displayPath}`);

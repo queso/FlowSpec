@@ -34,13 +34,15 @@ Claude Code hooks block agent modifications to spec files:
 ```json
 {
   "hooks": {
-    "preToolUse": [
+    "PreToolUse": [
       {
-        "matcher": {
-          "tool": ["Edit", "Write"],
-          "filePath": "specs/**/*.flow.yaml"
-        },
-        "command": "echo 'BLOCKED: FlowSpec files are immutable. Fix the implementation to match the spec.' && exit 1"
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const j=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));if(/\\bspecs\\/.*\\.flow\\.yaml$/.test(j.tool_input?.file_path||'')){console.log(JSON.stringify({decision:'block',reason:'Flow specs are immutable. Fix the implementation, not the spec.'}))}\""
+          }
+        ]
       }
     ]
   }
@@ -199,7 +201,7 @@ your-project/
 ├── src/
 │   └── ...
 ├── .claude/
-│   └── settings.json          # Contains hooks config
+│   └── settings.local.json    # Contains hooks config
 └── package.json
 ```
 
@@ -217,23 +219,27 @@ This creates the necessary hook configuration automatically, along with a sample
 
 ### Hook Configuration
 
-Add to `.claude/settings.json` (or use `flowspec init`):
+Add to `.claude/settings.local.json` (or use `flowspec init`):
 
 ```json
 {
   "hooks": {
-    "preToolUse": [
+    "PreToolUse": [
       {
-        "matcher": {
-          "tool": ["Edit", "Write"],
-          "filePath": "specs/**/*.flow.yaml"
-        },
-        "command": "echo 'BLOCKED: FlowSpec files are immutable. Fix the implementation to match the spec.' && exit 1"
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const j=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));if(/\\bspecs\\/.*\\.flow\\.yaml$/.test(j.tool_input?.file_path||'')){console.log(JSON.stringify({decision:'block',reason:'Flow specs are immutable. Fix the implementation, not the spec.'}))}\""
+          }
+        ]
       }
     ]
   }
 }
 ```
+
+If you already have a `settings.local.json`, running `flowspec init` again will merge the hook into your existing configuration without overwriting other settings.
 
 ### Skill for Agent Execution
 
