@@ -7,7 +7,6 @@
  * These tests run against real fixtures served by the test server.
  */
 
-import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_TIMEOUT,
@@ -16,14 +15,11 @@ import {
   runFlow,
 } from "../src/runner";
 import type { FlowSpec } from "../src/types";
+import { hasBrowserBinaries } from "./helpers/has-browser";
 import { createTestServer, type TestServer } from "./server";
 
-// Check if agent-browser CLI is available before running tests
-const agentBrowserCheck = spawnSync("agent-browser", ["--version"], {
-  stdio: "ignore",
-});
-const hasAgentBrowser = agentBrowserCheck.status === 0;
-const describeIfAgentBrowser = hasAgentBrowser ? describe : describe.skip;
+// Check if Playwright Chromium binaries are installed before running browser tests
+const describeIfAgentBrowser = hasBrowserBinaries() ? describe : describe.skip;
 
 describeIfAgentBrowser("Flow Runner", () => {
   let server: TestServer;

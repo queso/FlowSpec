@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   FlowError,
   FlowResult,
@@ -6,6 +7,26 @@ import type {
   StepAction,
   StepAssertion,
 } from "./types";
+
+// Declare minimal Bun types for TypeScript when running in Bun runtime
+declare global {
+  const Bun:
+    | {
+        spawn: (
+          cmd: string[],
+          options?: {
+            stdout?: "pipe" | "inherit" | "ignore";
+            stderr?: "pipe" | "inherit" | "ignore";
+            stdin?: "pipe" | "inherit" | "ignore";
+          },
+        ) => {
+          stdout: ReadableStream;
+          stderr: ReadableStream;
+          exited: Promise<number>;
+        };
+      }
+    | undefined;
+}
 
 /**
  * Options for flow execution
@@ -54,51 +75,128 @@ function generateSessionName(): string {
 }
 
 /**
- * Execute an agent-browser command and return the output
+ * Get the path to the agent-browser binary
  */
-function execBrowser(command: string, session: string): string {
+function getAgentBrowserPath(): string {
+  // Try to find agent-browser in node_modules/.bin
+  // This works whether we're running from src/ or from dist/
+  const currentFile = import.meta.url;
+  const currentDir = dirname(fileURLToPath(currentFile));
+
+  // From src/ it's ../node_modules/.bin/agent-browser
+  // From dist/ it's ../node_modules/.bin/agent-browser
+  const binPath = join(
+    currentDir,
+    "..",
+    "node_modules",
+    ".bin",
+    "agent-browser",
+  );
+
+  // If that doesn't work, fall back to npx
+  return binPath;
+}
+
+/**
+ * Execute a command using Bun's native spawn or Node's execFileSync
+ * Bun.spawn is used when available as it works better with concurrent I/O
+ */
+async function execCommand(
+  binPath: string,
+  args: string[],
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  // Check if Bun.spawn is available (running in Bun runtime)
+  if (Bun?.spawn) {
+    const proc = Bun.spawn([binPath, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    return { stdout, stderr, exitCode };
+  }
+
+  // Fall back to Node's execFileSync
+  const { execFileSync } = await import("node:child_process");
   try {
-    const fullCommand = `agent-browser --session ${session} ${command}`;
-    const result = execSync(fullCommand, {
+    const stdout = execFileSync(binPath, args, {
       encoding: "utf-8",
       timeout: 30000,
-      shell: process.env.SHELL || "/bin/sh",
+      maxBuffer: 10 * 1024 * 1024,
     });
-    return result;
+    return { stdout, stderr: "", exitCode: 0 };
   } catch (error: unknown) {
     const execError = error as {
-      message?: string;
-      stderr?: string;
-      stdout?: string;
+      stderr?: Buffer | string;
+      stdout?: Buffer | string;
+      status?: number;
     };
-    throw new Error(
-      execError.stderr ||
-        execError.stdout ||
-        execError.message ||
-        "Browser command failed",
-    );
+
+    const stderr =
+      typeof execError.stderr === "string"
+        ? execError.stderr
+        : execError.stderr?.toString() || "";
+    const stdout =
+      typeof execError.stdout === "string"
+        ? execError.stdout
+        : execError.stdout?.toString() || "";
+
+    return { stdout, stderr, exitCode: execError.status || 1 };
   }
+}
+
+/**
+ * Execute an agent-browser command and return the output
+ */
+async function execBrowser(command: string, session: string): Promise<string> {
+  const browserPath = getAgentBrowserPath();
+
+  // Parse command into args array - handle quoted strings
+  const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
+  // Remove quotes from args
+  const cleanArgs = args.map((arg) => arg.replace(/^["']|["']$/g, ""));
+
+  // Build full args array
+  const fullArgs = ["--session", session, ...cleanArgs];
+
+  const result = await execCommand(browserPath, fullArgs);
+
+  if (result.exitCode !== 0) {
+    // Include both stderr and stdout in error for debugging
+    const errorMessage =
+      result.stderr || result.stdout || "Browser command failed";
+    throw new Error(errorMessage);
+  }
+
+  return result.stdout;
 }
 
 /**
  * Get the current page URL
  */
-function getCurrentUrl(session: string): string {
-  return execBrowser('eval "window.location.href"', session).trim();
+async function getCurrentUrl(session: string): Promise<string> {
+  const result = await execBrowser('eval "window.location.href"', session);
+  return result.trim();
 }
 
 /**
  * Get the current page text content
  */
-function getPageContent(session: string): string {
+async function getPageContent(session: string): Promise<string> {
   return execBrowser("snapshot", session);
 }
 
 /**
  * Get interactive elements with refs
  */
-function getInteractiveSnapshot(session: string): string {
-  return execBrowser("snapshot -i", session);
+async function getInteractiveSnapshot(session: string): Promise<string> {
+  return execBrowser("snapshot", session);
 }
 
 /**
@@ -172,71 +270,81 @@ function findFieldRefByLabel(
 /**
  * Execute a visit step
  */
-function executeVisit(url: string, baseUrl: string, session: string): void {
+async function executeVisit(
+  url: string,
+  baseUrl: string,
+  session: string,
+): Promise<void> {
   const fullUrl = url.startsWith("http")
     ? url
     : new URL(url, baseUrl).toString();
-  execBrowser(`open ${shellEscape(fullUrl)}`, session);
+  await execBrowser(`open ${shellEscape(fullUrl)}`, session);
 }
 
 /**
  * Execute a click step
  */
-function executeClick(targetText: string, session: string): void {
-  const snapshot = getInteractiveSnapshot(session);
+async function executeClick(
+  targetText: string,
+  session: string,
+): Promise<void> {
+  const snapshot = await getInteractiveSnapshot(session);
   const ref = findElementRef(snapshot, targetText);
 
   if (!ref) {
-    const currentUrl = getCurrentUrl(session);
+    const currentUrl = await getCurrentUrl(session);
     throw new Error(
       `Could not find element with text "${targetText}" on ${currentUrl}`,
     );
   }
 
-  execBrowser(`click ${ref}`, session);
+  await execBrowser(`click ${ref}`, session);
 }
 
 /**
  * Execute a fill step
  */
-function executeFill(fields: Record<string, string>, session: string): void {
-  const snapshot = getInteractiveSnapshot(session);
+async function executeFill(
+  fields: Record<string, string>,
+  session: string,
+): Promise<void> {
+  const snapshot = await getInteractiveSnapshot(session);
 
   for (const [label, value] of Object.entries(fields)) {
     const ref = findFieldRefByLabel(snapshot, label);
 
     if (!ref) {
-      const currentUrl = getCurrentUrl(session);
+      const currentUrl = await getCurrentUrl(session);
       throw new Error(
         `Could not find field with label "${label}" on ${currentUrl}`,
       );
     }
 
     // Use fill to clear and set value
-    execBrowser(`fill ${ref} ${shellEscape(value)}`, session);
+    await execBrowser(`fill ${ref} ${shellEscape(value)}`, session);
   }
 }
 
 /**
  * Execute a select step
  */
-function executeSelect(
+async function executeSelect(
   selections: Record<string, string>,
   session: string,
-): void {
-  const snapshot = getInteractiveSnapshot(session);
+): Promise<void> {
+  const snapshot = await getInteractiveSnapshot(session);
 
   for (const [label, option] of Object.entries(selections)) {
     const ref = findFieldRefByLabel(snapshot, label);
 
     if (!ref) {
-      const currentUrl = getCurrentUrl(session);
+      const currentUrl = await getCurrentUrl(session);
       throw new Error(
         `Could not find select field with label "${label}" on ${currentUrl}`,
       );
     }
 
-    execBrowser(`select ${ref} ${shellEscape(option)}`, session);
+    await execBrowser(`select ${ref} ${shellEscape(option)}`, session);
   }
 }
 
@@ -244,12 +352,15 @@ function executeSelect(
  * Check if text is visible on the page
  * Returns undefined if found, or an error message if not found
  */
-function checkTextVisible(text: string, session: string): string | undefined {
-  const content = getPageContent(session);
+async function checkTextVisible(
+  text: string,
+  session: string,
+): Promise<string | undefined> {
+  const content = await getPageContent(session);
   if (content.includes(text)) {
     return undefined;
   }
-  const currentUrl = getCurrentUrl(session);
+  const currentUrl = await getCurrentUrl(session);
   return `Text "${text}" not found on ${currentUrl}`;
 }
 
@@ -263,7 +374,7 @@ async function executeWaitFor(
   timeout: number,
 ): Promise<void> {
   // First check: if text is visible, return immediately
-  let lastError = checkTextVisible(text, session);
+  let lastError = await checkTextVisible(text, session);
   if (!lastError) {
     return;
   }
@@ -280,7 +391,7 @@ async function executeWaitFor(
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL);
 
-    lastError = checkTextVisible(text, session);
+    lastError = await checkTextVisible(text, session);
     if (!lastError) {
       return;
     }
@@ -303,13 +414,13 @@ async function executeStep(
   timeout: number,
 ): Promise<void> {
   if ("visit" in step) {
-    executeVisit(step.visit, baseUrl, session);
+    await executeVisit(step.visit, baseUrl, session);
   } else if ("click" in step) {
-    executeClick(step.click, session);
+    await executeClick(step.click, session);
   } else if ("fill" in step) {
-    executeFill(step.fill, session);
+    await executeFill(step.fill, session);
   } else if ("select" in step) {
-    executeSelect(step.select, session);
+    await executeSelect(step.select, session);
   } else if ("wait_for" in step) {
     await executeWaitFor(step.wait_for, session, timeout);
   }
@@ -318,11 +429,11 @@ async function executeStep(
 /**
  * Check a URL assertion
  */
-function assertUrl(
+async function assertUrl(
   expected: string,
   session: string,
-): { passed: boolean; actual: string } {
-  const actual = getCurrentUrl(session);
+): Promise<{ passed: boolean; actual: string }> {
+  const actual = await getCurrentUrl(session);
   const passed = actual.endsWith(expected) || actual.includes(expected);
   return { passed, actual };
 }
@@ -330,11 +441,11 @@ function assertUrl(
 /**
  * Check a visible assertion
  */
-function assertVisible(
+async function assertVisible(
   text: string,
   session: string,
-): { passed: boolean; content: string } {
-  const content = getPageContent(session);
+): Promise<{ passed: boolean; content: string }> {
+  const content = await getPageContent(session);
   const passed = content.includes(text);
   return { passed, content };
 }
@@ -342,11 +453,11 @@ function assertVisible(
 /**
  * Check a matches (regex) assertion
  */
-function assertMatches(
+async function assertMatches(
   pattern: string,
   session: string,
-): { passed: boolean; content: string } {
-  const content = getPageContent(session);
+): Promise<{ passed: boolean; content: string }> {
+  const content = await getPageContent(session);
   const regex = new RegExp(pattern);
   const passed = regex.test(content);
   return { passed, content };
@@ -355,11 +466,11 @@ function assertMatches(
 /**
  * Check a not_visible assertion
  */
-function assertNotVisible(
+async function assertNotVisible(
   text: string,
   session: string,
-): { passed: boolean; content: string } {
-  const content = getPageContent(session);
+): Promise<{ passed: boolean; content: string }> {
+  const content = await getPageContent(session);
   const passed = !content.includes(text);
   return { passed, content };
 }
@@ -368,12 +479,12 @@ function assertNotVisible(
  * Check a single assertion once (synchronous single-check)
  * Returns error if assertion fails, undefined if it passes
  */
-function checkAssertion(
+async function checkAssertion(
   assertion: StepAssertion,
   session: string,
-): FlowError | undefined {
+): Promise<FlowError | undefined> {
   if ("url" in assertion) {
-    const result = assertUrl(assertion.url, session);
+    const result = await assertUrl(assertion.url, session);
     if (!result.passed) {
       return {
         message: `URL assertion failed: expected "${assertion.url}" but got "${result.actual}"`,
@@ -381,7 +492,7 @@ function checkAssertion(
       };
     }
   } else if ("visible" in assertion) {
-    const result = assertVisible(assertion.visible, session);
+    const result = await assertVisible(assertion.visible, session);
     if (!result.passed) {
       return {
         message: `Visible assertion failed: text "${assertion.visible}" not found on page`,
@@ -390,7 +501,7 @@ function checkAssertion(
     }
   } else if ("matches" in assertion) {
     try {
-      const result = assertMatches(assertion.matches, session);
+      const result = await assertMatches(assertion.matches, session);
       if (!result.passed) {
         return {
           message: `Matches assertion failed: pattern "${assertion.matches}" did not match page content`,
@@ -405,7 +516,7 @@ function checkAssertion(
       };
     }
   } else if ("not_visible" in assertion) {
-    const result = assertNotVisible(assertion.not_visible, session);
+    const result = await assertNotVisible(assertion.not_visible, session);
     if (!result.passed) {
       return {
         message: `Not visible assertion failed: text "${assertion.not_visible}" was found on page`,
@@ -428,7 +539,7 @@ async function executeAssertion(
   timeout: number,
 ): Promise<FlowError | undefined> {
   // First check: if it passes, return immediately (zero overhead)
-  let lastError = checkAssertion(assertion, session);
+  let lastError = await checkAssertion(assertion, session);
   if (!lastError) {
     return undefined;
   }
@@ -446,7 +557,7 @@ async function executeAssertion(
     await sleep(POLL_INTERVAL);
 
     // Re-check assertion (re-fetches page state from browser)
-    lastError = checkAssertion(assertion, session);
+    lastError = await checkAssertion(assertion, session);
     if (!lastError) {
       return undefined;
     }
@@ -459,9 +570,9 @@ async function executeAssertion(
 /**
  * Close a browser session
  */
-function closeBrowserSession(session: string): void {
+async function closeBrowserSession(session: string): Promise<void> {
   try {
-    execBrowser("close", session);
+    await execBrowser("close", session);
   } catch {
     // Ignore errors when closing - session may already be closed
   }
@@ -529,6 +640,6 @@ export async function runFlow(
     };
   } finally {
     // Always close the browser session when done
-    closeBrowserSession(session);
+    await closeBrowserSession(session);
   }
 }

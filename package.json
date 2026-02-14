@@ -37,7 +37,7 @@
     "format": "biome format --write ."
   },
   "dependencies": {
-    "agent-browser": "^0.1.0",
+    "agent-browser": "0.9.3",
     "js-yaml": "^4.1.0",
     "zod": "^3.22.0"
   },

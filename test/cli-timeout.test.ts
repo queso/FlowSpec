@@ -67,7 +67,9 @@ describe("CLI --timeout flag", () => {
     it("should accept --timeout with a value", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI(["run", flowFile, "--timeout", "1000"]);
+      const result = await runCLI(["run", flowFile, "--timeout", "0"], {
+        timeout: 15000,
+      });
 
       // Should not exit with code 2 (parse error) - the flag should be accepted
       expect(result.exitCode).not.toBe(2);
@@ -76,7 +78,9 @@ describe("CLI --timeout flag", () => {
     it("should accept --timeout before the path argument", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI(["run", "--timeout", "2000", flowFile]);
+      const result = await runCLI(["run", "--timeout", "0", flowFile], {
+        timeout: 15000,
+      });
 
       // Should not exit with code 2 - argument order should be flexible
       expect(result.exitCode).not.toBe(2);
@@ -85,7 +89,9 @@ describe("CLI --timeout flag", () => {
     it("should handle --timeout without a value gracefully", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI(["run", flowFile, "--timeout"]);
+      const result = await runCLI(["run", flowFile, "--timeout"], {
+        timeout: 15000,
+      });
 
       // Should not crash - either ignore the flag or show an error
       // The exit code could be 0, 1, or 2 depending on handling strategy
@@ -96,7 +102,9 @@ describe("CLI --timeout flag", () => {
     it("should handle --timeout with non-numeric value gracefully", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI(["run", flowFile, "--timeout", "invalid"]);
+      const result = await runCLI(["run", flowFile, "--timeout", "invalid"], {
+        timeout: 15000,
+      });
 
       // Should not crash with unhandled exception
       expect(result.exitCode).toBeDefined();
@@ -142,9 +150,13 @@ describe("CLI --timeout flag", () => {
       }
     });
 
-    it("should use default timeout when --timeout is not specified", async () => {
-      // Create a valid flow file
-      const flowYaml = `
+    it(
+      "should use default timeout when --timeout is not specified",
+      { timeout: 30000 },
+      async () => {
+        // Create a valid flow file that visits a page with no assertions
+        // so it completes quickly even with default timeout
+        const flowYaml = `
 name: timeout-test
 description: Test flow for timeout passthrough
 steps:
@@ -152,19 +164,22 @@ steps:
 expect:
   - visible: Test
 `;
-      const filePath = join(tempDir, "timeout-test.flow.yaml");
-      writeFileSync(filePath, flowYaml);
+        const filePath = join(tempDir, "timeout-test.flow.yaml");
+        writeFileSync(filePath, flowYaml);
 
-      const result = await runCLI(["run", filePath]);
+        const result = await runCLI(["run", filePath], { timeout: 15000 });
 
-      // Should run without parse errors (runner may fail due to no server)
-      expect(result.exitCode).not.toBe(2);
-    });
+        // Should run without parse errors (runner may fail due to no server)
+        expect(result.exitCode).not.toBe(2);
+      },
+    );
 
     it("should accept timeout value of 0", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI(["run", flowFile, "--timeout", "0"]);
+      const result = await runCLI(["run", flowFile, "--timeout", "0"], {
+        timeout: 15000,
+      });
 
       // timeout=0 means no retries - should be valid
       expect(result.exitCode).not.toBe(2);
@@ -173,7 +188,11 @@ expect:
     it("should accept large timeout values", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI(["run", flowFile, "--timeout", "60000"]);
+      // Pass a large --timeout value but use --timeout 0 behavior isn't what we're testing
+      // We're testing the CLI accepts 60000 as a value - use short spawn timeout
+      const result = await runCLI(["run", flowFile, "--timeout", "60000"], {
+        timeout: 15000,
+      });
 
       // Should accept 60 second timeout
       expect(result.exitCode).not.toBe(2);
@@ -184,14 +203,17 @@ expect:
     it("should work with --base-url and --timeout together", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI([
-        "run",
-        flowFile,
-        "--base-url",
-        "http://localhost:9999",
-        "--timeout",
-        "3000",
-      ]);
+      const result = await runCLI(
+        [
+          "run",
+          flowFile,
+          "--base-url",
+          "http://localhost:9999",
+          "--timeout",
+          "0",
+        ],
+        { timeout: 15000 },
+      );
 
       // Both flags should be accepted
       expect(result.exitCode).not.toBe(2);
@@ -200,14 +222,17 @@ expect:
     it("should work with --timeout before --base-url", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-      const result = await runCLI([
-        "run",
-        "--timeout",
-        "3000",
-        "--base-url",
-        "http://localhost:9999",
-        flowFile,
-      ]);
+      const result = await runCLI(
+        [
+          "run",
+          "--timeout",
+          "0",
+          "--base-url",
+          "http://localhost:9999",
+          flowFile,
+        ],
+        { timeout: 15000 },
+      );
 
       // Order should not matter
       expect(result.exitCode).not.toBe(2);

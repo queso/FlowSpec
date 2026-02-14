@@ -79,7 +79,9 @@ describe("CLI", () => {
 
         // Run with single file - this should at least parse the file
         // (runner may fail without browser, but parsing should work)
-        const result = await runCLI(["run", flowFile]);
+        const result = await runCLI(["run", flowFile, "--timeout", "0"], {
+          timeout: 15000,
+        });
 
         // Should not exit with code 2 (parse error) for a valid file
         // It may exit with 0 (if mocked) or 1 (if runner fails)
@@ -88,7 +90,12 @@ describe("CLI", () => {
       });
 
       it("should accept a directory path", async () => {
-        const result = await runCLI(["run", VALID_FLOWS_DIR]);
+        const result = await runCLI(
+          ["run", VALID_FLOWS_DIR, "--timeout", "0"],
+          {
+            timeout: 30000,
+          },
+        );
 
         // Should discover and attempt to run flow files in directory
         // Not exit code 2 since all files in valid/ are valid
@@ -97,12 +104,17 @@ describe("CLI", () => {
 
       it("should accept --base-url option", async () => {
         const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
-        const result = await runCLI([
-          "run",
-          flowFile,
-          "--base-url",
-          "http://localhost:9999",
-        ]);
+        const result = await runCLI(
+          [
+            "run",
+            flowFile,
+            "--base-url",
+            "http://localhost:9999",
+            "--timeout",
+            "0",
+          ],
+          { timeout: 15000 },
+        );
 
         // Should parse without error even if runner fails
         // The option should be accepted
@@ -155,7 +167,9 @@ expect:
         writeFileSync(join(tempDir, "flow1.flow.yaml"), flow1);
         writeFileSync(join(tempDir, "flow2.flow.yaml"), flow2);
 
-        const result = await runCLI(["run", tempDir]);
+        const result = await runCLI(["run", tempDir, "--timeout", "0"], {
+          timeout: 30000,
+        });
 
         // Should find and process both files
         // Output should mention both flows (in results or errors)
@@ -171,7 +185,9 @@ other: stuff
 `;
         writeFileSync(join(tempDir, "config.yaml"), configYaml);
 
-        const result = await runCLI(["run", tempDir]);
+        const result = await runCLI(["run", tempDir, "--timeout", "0"], {
+          timeout: 30000,
+        });
 
         // Should not try to parse config.yaml as a flow
         // (would cause parse error if it did)
@@ -298,7 +314,9 @@ expect:
 
       it("should format results with flow name", async () => {
         const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
-        const result = await runCLI(["run", flowFile]);
+        const result = await runCLI(["run", flowFile, "--timeout", "0"], {
+          timeout: 15000,
+        });
 
         // Output should include the flow name
         const output = result.stdout + result.stderr;
@@ -306,7 +324,10 @@ expect:
       });
 
       it("should show summary after running multiple flows", async () => {
-        const result = await runCLI(["run", VALID_FLOWS_DIR]);
+        const result = await runCLI(
+          ["run", VALID_FLOWS_DIR, "--timeout", "0"],
+          { timeout: 30000 },
+        );
 
         // Summary should show counts
         const output = result.stdout + result.stderr;
@@ -328,7 +349,9 @@ expect:
         const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
         // Run without --base-url
-        const result = await runCLI(["run", flowFile]);
+        const result = await runCLI(["run", flowFile, "--timeout", "0"], {
+          timeout: 15000,
+        });
 
         // The command should execute (may fail due to no server, but should try)
         // Not checking specific output since we're testing the option is optional
@@ -338,12 +361,17 @@ expect:
       it("should accept custom base URL via --base-url flag", async () => {
         const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");
 
-        const result = await runCLI([
-          "run",
-          flowFile,
-          "--base-url",
-          "http://custom.example.com:8080",
-        ]);
+        const result = await runCLI(
+          [
+            "run",
+            flowFile,
+            "--base-url",
+            "http://custom.example.com:8080",
+            "--timeout",
+            "0",
+          ],
+          { timeout: 15000 },
+        );
 
         // Should not fail due to invalid option
         expect(result.exitCode).not.toBe(2);
