@@ -6,7 +6,7 @@ import type {
   FlowSpec,
   StepAction,
   StepAssertion,
-} from "./types";
+} from "./types.js";
 
 // Declare minimal Bun types for TypeScript when running in Bun runtime
 declare global {

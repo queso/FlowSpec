@@ -1,12 +1,12 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig, mergeConfig } from "./config";
-import { formatInitResult, initProject } from "./init";
-import { parseFlowFile } from "./parser";
-import { formatResult, formatSummary } from "./reporter";
-import { DEFAULT_TIMEOUT, runFlow } from "./runner";
-import type { FlowResult, FlowSpec } from "./types";
+import { loadConfig, mergeConfig } from "./config.js";
+import { formatInitResult, initProject } from "./init.js";
+import { parseFlowFile } from "./parser.js";
+import { formatResult, formatSummary } from "./reporter.js";
+import { DEFAULT_TIMEOUT, runFlow } from "./runner.js";
+import type { FlowResult, FlowSpec } from "./types.js";
 
 interface CliOptions {
   path?: string;
