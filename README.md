@@ -32,8 +32,12 @@ Requires [agent-browser](https://github.com/anthropics/agent-browser) for browse
 ### Initialize a New Project
 
 ```bash
-# Scaffold a new FlowSpec project
+# Scaffold a new FlowSpec project in the current directory
 flowspec init
+
+# Initialize in a specific directory (creates it if it doesn't exist)
+flowspec init --dir apps/web
+flowspec init --dir /absolute/path/to/project
 ```
 
 This creates:
@@ -43,6 +47,32 @@ This creates:
 - Updates `package.json` with `test:e2e` script
 
 Running `init` again is safe: existing files are skipped, and the protection hook is merged into an existing `settings.local.json` without overwriting your other settings.
+
+#### Monorepo Setup
+
+FlowSpec detects monorepo markers in the target directory:
+
+| Marker | Detected when |
+| ------ | ------------- |
+| `pnpm-workspace.yaml` | File exists in directory |
+| `turbo.json` | File exists in directory |
+| `nx.json` | File exists in directory |
+| `workspaces` | Field present in `package.json` |
+
+When markers are found, `init` warns that you may be running from the repo root rather than an app subdirectory. The warning is advisory — init still proceeds and creates all files.
+
+**Recommended approach for monorepos:** run init from your app's subdirectory or use `--dir`:
+
+```bash
+# From the repo root, target a specific app
+flowspec init --dir apps/web
+flowspec init --dir packages/marketing-site
+
+# Or cd into the app first
+cd apps/web && flowspec init
+```
+
+FlowSpec also searches for existing `flowspec.config.yaml` and `specs/` directories nearby (upward in parent directories and one level down into children) and reports them when found, so you can see if another part of your monorepo is already set up.
 
 ### Run Flows
 

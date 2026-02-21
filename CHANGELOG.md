@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--dir` flag for `flowspec init`** (PRD-0005)
+  - `flowspec init --dir apps/web` initializes FlowSpec in a specific directory
+  - Creates the target directory if it doesn't exist
+  - Supports both relative and absolute paths
+
+- **Monorepo detection**
+  - `detectMonorepoMarkers(dir)` checks for `pnpm-workspace.yaml`, `turbo.json`, `nx.json`, and `workspaces` in `package.json`
+  - Advisory warning when monorepo markers are found, suggesting `--dir` to target a specific package
+  - Skips detection entirely when no `package.json` is present
+
+- **Existing setup detection**
+  - `findExistingSetup(dir)` searches upward for `flowspec.config.yaml` and one level down for `specs/*.flow.yaml`
+  - Init output reports existing config and specs locations when found
+
+- **Enhanced init output**
+  - Shows target directory path
+  - Displays monorepo warnings with detected markers
+  - Reports nearby existing FlowSpec configuration and specs directories
+
 ## [0.1.2] - 2026-02-20
 
 ### Fixed

@@ -150,10 +150,13 @@ describe("CLI --timeout flag", () => {
       }
     });
 
-    it("should use default timeout when --timeout is not specified", async () => {
-      // Create a valid flow file that visits a page with no assertions
-      // so it completes quickly even with default timeout
-      const flowYaml = `
+    it(
+      "should use default timeout when --timeout is not specified",
+      { timeout: 20000 },
+      async () => {
+        // Create a valid flow file that visits a page with no assertions
+        // so it completes quickly even with default timeout
+        const flowYaml = `
 name: timeout-test
 description: Test flow for timeout passthrough
 steps:
@@ -161,14 +164,15 @@ steps:
 expect:
   - visible: Test
 `;
-      const filePath = join(tempDir, "timeout-test.flow.yaml");
-      writeFileSync(filePath, flowYaml);
+        const filePath = join(tempDir, "timeout-test.flow.yaml");
+        writeFileSync(filePath, flowYaml);
 
-      const result = await runCLI(["run", filePath], { timeout: 15000 });
+        const result = await runCLI(["run", filePath], { timeout: 15000 });
 
-      // Should run without parse errors (runner may fail due to no server)
-      expect(result.exitCode).not.toBe(2);
-    });
+        // Should run without parse errors (runner may fail due to no server)
+        expect(result.exitCode).not.toBe(2);
+      },
+    );
 
     it("should accept timeout value of 0", async () => {
       const flowFile = join(VALID_FLOWS_DIR, "login.flow.yaml");

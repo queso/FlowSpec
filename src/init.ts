@@ -1,5 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { findConfigFile } from "./config.js";
 
 /**
  * Result of creating a single file during init
@@ -13,11 +20,30 @@ export interface InitFileResult {
 }
 
 /**
+ * Result of monorepo detection
+ */
+export interface MonorepoDetectionResult {
+  isMonorepo: boolean;
+  markers: string[];
+}
+
+/**
+ * Result of searching for an existing FlowSpec setup
+ */
+export interface ExistingSetupResult {
+  configPath: string | null;
+  specsDir: string | null;
+}
+
+/**
  * Result of the init command
  */
 export interface InitResult {
   files: InitFileResult[];
   success: boolean;
+  projectDir?: string;
+  monorepoMarkers?: MonorepoDetectionResult;
+  existingSetup?: ExistingSetupResult;
 }
 
 /**
@@ -252,6 +278,90 @@ function ensureClaudeHook(projectDir: string): InitFileResult {
 }
 
 /**
+ * Detect whether the given directory is a monorepo root by checking for workspace markers.
+ * If no package.json exists in the directory, skips all detection and returns false.
+ *
+ * @param dir - Directory to check
+ * @returns Detection result with isMonorepo flag and list of found markers
+ */
+export function detectMonorepoMarkers(dir: string): MonorepoDetectionResult {
+  const packageJsonPath = join(dir, "package.json");
+
+  if (!existsSync(packageJsonPath)) {
+    return { isMonorepo: false, markers: [] };
+  }
+
+  const markers: string[] = [];
+
+  const fileMarkers = ["pnpm-workspace.yaml", "turbo.json", "nx.json"];
+  for (const file of fileMarkers) {
+    if (existsSync(join(dir, file))) {
+      markers.push(file);
+    }
+  }
+
+  try {
+    const content = readFileSync(packageJsonPath, "utf-8");
+    const pkg = JSON.parse(content) as Record<string, unknown>;
+    if (pkg.workspaces !== undefined) {
+      markers.push("workspaces");
+    }
+  } catch {
+    // If package.json can't be parsed, skip workspaces check
+  }
+
+  return { isMonorepo: markers.length > 0, markers };
+}
+
+/**
+ * Check if a directory contains *.flow.yaml files
+ */
+function hasFlowYamlFiles(dir: string): boolean {
+  try {
+    const entries = readdirSync(dir);
+    return entries.some((entry) => entry.endsWith(".flow.yaml"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Search upward and downward for existing FlowSpec configuration or spec files.
+ * Upward search starts from the parent of dir (not dir itself).
+ * Downward search checks only immediate child directories for specs/ with .flow.yaml files.
+ *
+ * @param dir - Directory to search from
+ * @returns Paths to config and specs if found, null otherwise
+ */
+export function findExistingSetup(dir: string): ExistingSetupResult {
+  const absDir = resolve(dir);
+
+  // Upward search: start from parent, not dir itself
+  const parentDir = resolve(absDir, "..");
+  const foundConfig = findConfigFile(parentDir);
+  const configPath = foundConfig ?? null;
+
+  // Downward search: check only immediate children of dir for specs/*.flow.yaml
+  let specsDir: string | null = null;
+  try {
+    const entries = readdirSync(absDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    for (const entry of entries) {
+      const specsPath = join(absDir, entry, "specs");
+      if (existsSync(specsPath) && hasFlowYamlFiles(specsPath)) {
+        specsDir = specsPath;
+        break;
+      }
+    }
+  } catch {
+    // If we can't read the directory, leave specsDir as null
+  }
+
+  return { configPath, specsDir };
+}
+
+/**
  * Initialize FlowSpec in a project directory
  * Creates configuration files and example flow
  *
@@ -286,7 +396,11 @@ export function initProject(projectDir: string = process.cwd()): InitResult {
   // Determine overall success
   const success = files.every((f) => !f.error);
 
-  return { files, success };
+  // Collect monorepo and existing setup context
+  const monorepoMarkers = detectMonorepoMarkers(projectDir);
+  const existingSetup = findExistingSetup(projectDir);
+
+  return { files, success, projectDir, monorepoMarkers, existingSetup };
 }
 
 /**
@@ -294,6 +408,35 @@ export function initProject(projectDir: string = process.cwd()): InitResult {
  */
 export function formatInitResult(result: InitResult): string {
   const lines: string[] = [];
+
+  // Show target directory if provided
+  if (result.projectDir) {
+    lines.push(`Initializing FlowSpec in: ${result.projectDir}`);
+    lines.push("");
+  }
+
+  // Show monorepo warning when markers found and no existing config/specs nearby
+  const hasMonorepoMarkers = result.monorepoMarkers?.isMonorepo === true;
+  const hasExistingConfig = result.existingSetup?.configPath != null;
+  const hasExistingSpecs = result.existingSetup?.specsDir != null;
+  if (hasMonorepoMarkers && !hasExistingConfig && !hasExistingSpecs) {
+    const markerList = result.monorepoMarkers?.markers.join(", ");
+    lines.push(
+      `Warning: monorepo detected (${markerList}). Consider running flowspec init in a specific package directory.`,
+    );
+    lines.push("");
+  }
+
+  // Show existing setup locations if found
+  if (hasExistingConfig) {
+    lines.push(`Found existing config: ${result.existingSetup?.configPath}`);
+  }
+  if (hasExistingSpecs) {
+    lines.push(`Found existing specs: ${result.existingSetup?.specsDir}`);
+  }
+  if (hasExistingConfig || hasExistingSpecs) {
+    lines.push("");
+  }
 
   for (const file of result.files) {
     const relativePath = file.path.includes("/")

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig, mergeConfig } from "./config.js";
 import { formatInitResult, initProject } from "./init.js";
@@ -28,8 +28,10 @@ Run Command Options:
   --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
   --help            Show help
 
-Init Command:
-  Creates FlowSpec configuration in the current directory:
+Init Command Options:
+  --dir <path>      Target directory (default: current directory)
+
+  Creates FlowSpec configuration in the target directory:
     - flowspec.config.yaml (project settings)
     - specs/example.flow.yaml (sample flow)
     - .claude/settings.local.json (protects specs from AI edits)
@@ -136,8 +138,24 @@ async function runFlows(
   return results;
 }
 
-function handleInitCommand(): void {
-  const result = initProject(process.cwd());
+function handleInitCommand(args: string[] = []): void {
+  // Parse --dir flag
+  let targetDir = process.cwd();
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--dir" && i + 1 < args.length) {
+      targetDir = resolve(process.cwd(), args[++i]);
+    } else if (args[i] === "--help" || args[i] === "-h") {
+      showHelp();
+      process.exit(0);
+    }
+  }
+
+  // Create the directory if it doesn't exist
+  if (!existsSync(targetDir)) {
+    mkdirSync(targetDir, { recursive: true });
+  }
+
+  const result = initProject(targetDir);
   console.log(formatInitResult(result));
   process.exit(result.success ? 0 : 1);
 }
@@ -219,7 +237,7 @@ async function main(): Promise<void> {
   const command = args[0];
 
   if (command === "init") {
-    handleInitCommand();
+    handleInitCommand(args.slice(1));
   } else if (command === "run") {
     await handleRunCommand(args.slice(1));
   } else if (command === "--help" || command === "-h") {
