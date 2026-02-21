@@ -10,7 +10,8 @@ import type {
 
 // Declare minimal Bun types for TypeScript when running in Bun runtime
 declare global {
-  const Bun:
+  // eslint-disable-next-line no-var
+  var Bun:
     | {
         spawn: (
           cmd: string[],
@@ -106,8 +107,10 @@ async function execCommand(
   args: string[],
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   // Check if Bun.spawn is available (running in Bun runtime)
-  if (Bun?.spawn) {
-    const proc = Bun.spawn([binPath, ...args], {
+  // Use globalThis to avoid ReferenceError under Node.js where Bun is undeclared
+  const BunRuntime = globalThis.Bun;
+  if (BunRuntime?.spawn) {
+    const proc = BunRuntime.spawn([binPath, ...args], {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
