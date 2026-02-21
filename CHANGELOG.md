@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-02-20
+
+### Fixed
+
+- CLI shebang changed from `#!/usr/bin/env bun` to `#!/usr/bin/env node` so the published package runs without requiring Bun
+- Switched to `NodeNext` module resolution with `.js` import extensions so `tsc` output is valid Node ESM
+- Access `Bun` global safely via `globalThis` to avoid `ReferenceError` under Node.js — the `execFileSync` fallback now works correctly
+
 ## [0.1.1] - 2026-02-12
 
 ### Fixed
