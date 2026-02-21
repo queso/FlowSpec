@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import yaml from "js-yaml";
 import type { ZodError } from "zod";
-import { type FlowSpec, FlowSpecSchema } from "./types";
+import { type FlowSpec, FlowSpecSchema } from "./types.js";
 
 /**
  * Format a Zod validation error into a human-readable message

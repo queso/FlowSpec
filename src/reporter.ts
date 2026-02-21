@@ -1,4 +1,4 @@
-import type { FlowError, FlowResult, StepAction } from "./types";
+import type { FlowError, FlowResult, StepAction } from "./types.js";
 
 // ANSI color codes
 const GREEN = "\x1b[32m";
