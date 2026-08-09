@@ -1,0 +1,44 @@
+# Nitpick AI PR review — multi-station review via the reusable nitpick-flow workflow.
+#
+# Prerequisites (all must be true before this will succeed):
+#   1. The nitpick image is published: ghcr.io/queso/nitpick-flow:main (nitpick-flow's publish.yml).
+#   2. This repo is granted Read on that package (nitpick-flow package → Manage Actions access).
+#   3. This repo has a FIREWORKS_AI_API_KEY secret (the model gateway key).
+#
+# On (2): the image is private, but nitpick-flow and this repo are both owned by `queso`, so a
+# package grant is sufficient and no registry_token is passed below — the same shape print-farm
+# uses. The GHCR_READ_PAT secret that conduit-harness carries exists only because that repo is
+# CROSS-ORG (theaiteam-dev); a PAT is not needed here and would be a long-lived credential in a
+# public repo for no gain.
+#
+# Models + gateway default to Fireworks in the reusable workflow; override via `with:` if needed.
+
+name: Nitpick PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+jobs:
+  review:
+    # FORK GUARD — the one deviation from print-farm's caller, because FlowSpec is the first
+    # PUBLIC repo to consume this workflow (nitpick-flow and print-farm are both private, so the
+    # case never arose). GitHub withholds secrets from fork PRs, so without this an outside
+    # contributor's PR fails on a missing conduit_api_key: a red check they have no way to fix,
+    # on the one PR where a good first impression matters most. Branches pushed to this repo
+    # review normally.
+    #
+    # Deliberately NOT solved with pull_request_target, which would put repo secrets in scope
+    # while checking out untrusted PR code — the standard token-exfiltration vector for public
+    # repos. Reviewing outside contributions is not worth that trade.
+    #
+    # If FlowSpec stops taking outside contributions, delete this `if` and the caller matches
+    # print-farm exactly.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: queso/nitpick-flow/.github/workflows/nitpick.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      packages: read
+    secrets:
+      conduit_api_key: ${{ secrets.FIREWORKS_AI_API_KEY }}
