@@ -139,15 +139,28 @@ async function runFlows(
 }
 
 function handleInitCommand(args: string[] = []): void {
+  // --help wins over everything else, including a malformed --dir
+  if (args.includes("--help") || args.includes("-h")) {
+    showHelp();
+    process.exit(0);
+  }
+
   // Parse --dir flag
   let targetDir = process.cwd();
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--dir" && i + 1 < args.length) {
-      targetDir = resolve(process.cwd(), args[++i]);
-    } else if (args[i] === "--help" || args[i] === "-h") {
-      showHelp();
-      process.exit(0);
+    if (args[i] !== "--dir") continue;
+
+    // A missing value must not silently fall back to cwd — scaffolding the
+    // directory the user happens to be standing in is a destructive surprise.
+    const value = args[i + 1];
+    if (value === undefined || value.startsWith("-")) {
+      console.error("Error: --dir requires a directory path");
+      console.error("Usage: flowspec init --dir <path>");
+      process.exit(1);
     }
+
+    targetDir = resolve(process.cwd(), value);
+    i++;
   }
 
   // Create the directory if it doesn't exist

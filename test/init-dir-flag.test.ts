@@ -176,12 +176,29 @@ describe("flowspec init --dir flag", () => {
   });
 
   describe("edge cases", () => {
-    it("handles --dir without a value gracefully (no crash)", async () => {
-      const result = await runCLI(["init", "--dir"]);
+    it("errors when --dir is given without a value", async () => {
+      // Run from tempDir, not the project root: if this ever regresses to the
+      // old cwd fallback, it must scaffold a scratch dir rather than the repo.
+      const result = await runCLI(["init", "--dir"], { cwd: tempDir });
 
-      // Should not crash with an unhandled exception — any exit code is acceptable
-      // but the process must terminate cleanly
-      expect(result.exitCode).toBeDefined();
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/--dir requires a directory path/);
+    });
+
+    it("does not scaffold anything when --dir is missing its value", async () => {
+      await runCLI(["init", "--dir"], { cwd: tempDir });
+
+      expect(existsSync(join(tempDir, "flowspec.config.yaml"))).toBe(false);
+      expect(existsSync(join(tempDir, "specs"))).toBe(false);
+    });
+
+    it("errors when --dir is followed by another flag", async () => {
+      const result = await runCLI(["init", "--dir", "--verbose"], {
+        cwd: tempDir,
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(existsSync(join(tempDir, "--verbose"))).toBe(false);
     });
 
     it("output indicates success or error without hanging", async () => {

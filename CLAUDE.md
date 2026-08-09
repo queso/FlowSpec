@@ -6,15 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 bun install              # Install dependencies
-bun test                 # Run all tests
+bun run test             # Run all tests (bun test --timeout 30000)
 bun test test/types      # Run single test file (partial match)
+bun run test:coverage    # Run tests with coverage
 bun run typecheck        # Type check with tsc
 bun run lint             # Lint with Biome
 bun run lint:fix         # Auto-fix lint issues
 bun run format           # Format code with Biome
 bun run dev              # Run CLI entry point
-bun run test:coverage    # Run tests with coverage
 ```
+
+Tests run on **Bun's built-in test runner**, not Vitest. Test files import from
+`"vitest"`, which Bun maps to `bun:test` automatically — keep that import style
+when adding tests. The 30s timeout is required: the browser-driven tests in
+`runner.test.ts` and `config.test.ts` exceed Bun's 5s default. CI runs
+`bun run test` so the timeout stays defined in one place.
 
 ## Architecture
 
