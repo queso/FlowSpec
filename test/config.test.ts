@@ -39,7 +39,6 @@ describe("Project Configuration", () => {
     expect(pkg.dependencies["agent-browser"]).toBeDefined();
     expect(pkg.devDependencies.express).toBeDefined();
     expect(pkg.devDependencies.typescript).toBeDefined();
-    expect(pkg.devDependencies.vitest).toBeDefined();
   });
 
   it("should have valid tsconfig.json with strict mode", () => {
@@ -53,14 +52,16 @@ describe("Project Configuration", () => {
     expect(tsconfig.compilerOptions.strict).toBe(true);
   });
 
-  it("should have valid vitest.config.ts", () => {
-    const vitestConfigPath = join(PROJECT_ROOT, "vitest.config.ts");
-    expect(existsSync(vitestConfigPath)).toBe(true);
+  it("should run tests on bun's built-in runner with an explicit timeout", () => {
+    const content = readFileSync(join(PROJECT_ROOT, "package.json"), "utf-8");
+    const pkg = JSON.parse(content);
 
-    const content = readFileSync(vitestConfigPath, "utf-8");
-    expect(
-      content.includes("defineConfig") || content.includes("export default"),
-    ).toBe(true);
+    // Bun's 5s default is too short for the browser-driven tests in
+    // runner.test.ts, so both test scripts must raise it explicitly.
+    for (const script of [pkg.scripts.test, pkg.scripts["test:coverage"]]) {
+      expect(script).toMatch(/^bun test\b/);
+      expect(script).toMatch(/--timeout \d+/);
+    }
   });
 });
 

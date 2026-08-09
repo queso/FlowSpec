@@ -15,13 +15,23 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.1.42"
+          # Must be >= 1.2 to parse the text bun.lock format. Older versions
+          # fail with "Unknown lockfile version", ignore the lockfile, and
+          # silently resolve every range to latest — which defeats pinning.
+          bun-version: "1.3.11"
 
       - name: Install dependencies
-        run: bun install
+        # Fail loudly if the lockfile and package.json disagree, rather than
+        # quietly installing something other than what was committed.
+        run: bun install --frozen-lockfile
 
       - name: Install Playwright browsers
-        run: bunx agent-browser install --with-deps
+        # Install via the same playwright-core the runner launches with, so the
+        # Chromium build always matches. `agent-browser install` cannot be used
+        # here: it goes through a native shim carrying its own newer Playwright
+        # and fetches build 1234, while agent-browser launches through the
+        # hoisted playwright-core (1.58.1), which looks for build 1208.
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
 
       - name: Lint
         run: bun run lint
@@ -30,4 +40,4 @@ jobs:
         run: bun run typecheck
 
       - name: Run tests
-        run: bun test --timeout 30000
+        run: bun run test
