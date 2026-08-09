@@ -26,7 +26,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install Playwright browsers
-        run: bunx agent-browser install --with-deps
+        # Use the locally installed agent-browser, not bunx. bunx resolves the
+        # latest release from the registry (0.33.x), which installs a different
+        # Chromium build than the pinned 0.9.3 the runner actually launches —
+        # so the browser downloaded here would not be the one Playwright looks
+        # for at runtime.
+        run: ./node_modules/.bin/agent-browser install --with-deps
 
       - name: Lint
         run: bun run lint
