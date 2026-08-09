@@ -1,33 +1,23 @@
 # Nitpick AI PR review for queso/FlowSpec.
 #
-# INLINED COPY — do not "simplify" this back into a `uses:` caller.
+# INLINED COPY — do not convert this back into a `uses:` caller. FlowSpec is public and
+# queso/nitpick-flow is private, and a public caller cannot resolve a private reusable
+# workflow: the run dies at resolution time with no jobs scheduled (seen on PR #9). Inlining
+# is the same workaround theaiteam-dev/conduit-harness uses for the cross-org case.
 #
-# FlowSpec is PUBLIC and queso/nitpick-flow is PRIVATE. A public caller cannot resolve a private
-# reusable workflow, so `uses: queso/nitpick-flow/.github/workflows/nitpick.yml@main` fails at
-# workflow-resolution time — the run dies in 0s with no jobs and Actions shows the file path
-# instead of the workflow name (observed on PR #9, run 31291660149). nitpick-flow's Actions access
-# is already `access_level: user`; that shares its workflows with other queso-owned repos but does
-# not extend to a public caller. print-farm works because it is private.
-#
-# theaiteam-dev/conduit-harness inlines this same workflow for the sibling reason (cross-org).
-# Do NOT copy from conduit-harness's version — it has drifted and is missing the paginated
-# diff fallback, the size safety valve, the spider step, and the whole-run retry.
-#
-# PROVENANCE: inlined from queso/nitpick-flow .github/workflows/nitpick.yml @ 6bbcb0b.
-# Upstream owns the operational knowledge in the comments below (the 60k-line valve, the
-# conduit-harness#89 retry, --entrypoint bun, the /tmp-vs-/flow ownership rule). When upstream
-# changes, re-inline from it rather than hand-patching here. The `with:` inputs of the reusable
-# workflow become the `env:` block below.
+# PROVENANCE: inlined from nitpick-flow .github/workflows/nitpick.yml @ 6bbcb0b, which is the
+# source of truth. Comments here are deliberately brief — the full rationale for each step
+# (sizing limits, retry semantics, container ownership rules, and the measurements behind
+# them) lives upstream in that file. Re-inline from upstream rather than hand-patching here.
 #
 # Prerequisites (one-time, outside this file):
-#   1. Image published: ghcr.io/queso/nitpick-flow:main (nitpick-flow's publish.yml).
-#   2. This repo granted Read on that package (nitpick-flow package -> Manage Actions access).
-#      The image is private; same-owner, so a package grant is enough and no PAT is needed.
-#      (conduit-harness carries GHCR_READ_PAT only because it is cross-org.)
-#   3. Repo secret FIREWORKS_AI_API_KEY — the model gateway key. Already set.
+#   1. Image published: ghcr.io/queso/nitpick-flow:main.
+#   2. This repo granted Read on that package (package -> Manage Actions access). The image
+#      is private; same-owner, so a package grant suffices and no PAT is needed.
+#   3. Repo secret FIREWORKS_AI_API_KEY — the model gateway key.
 #
-# The long-term fix for both the workflow-access and image-access problems is a GitHub App
-# rather than a copied workflow plus a package grant.
+# Longer term this should be a GitHub App, which removes both the workflow-access and the
+# image-access problem.
 
 name: Nitpick PR Review
 
@@ -62,10 +52,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The one-shot diff media type hard-fails past 20,000 lines ("diff too_large", hit on
-          # print-farm#48: 124 files / +17.7k). Fall back to reconstructing a reviewable patch
-          # from the paginated per-file entries; files whose own patch GitHub also withholds
-          # (binaries, generated giants) are listed by name so reviewers know they exist.
+          # The one-shot diff media type hard-fails on large PRs ("diff too_large"); fall back to
+          # rebuilding a reviewable patch from the paginated per-file entries. Files whose patch
+          # GitHub also withholds (binaries, generated giants) are listed by name.
           PR="repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}"
           if ! gh api "$PR" -H "Accept: application/vnd.github.diff" > diff.patch 2>diff.err; then
             echo "one-shot diff unavailable ($(cat diff.err | head -c 200)); rebuilding per-file"
@@ -75,25 +64,10 @@ jobs:
               > diff.patch
           fi
           rm -f diff.err
-          # SAFETY VALVE, applied to BOTH paths. Per-prompt sizing is no longer this cap's job:
-          # the shard planner owns it — each reviewer child's prompt carries only its shard's
-          # file-exact slice, so prompt size is bounded by the packer no matter how big the
-          # total diff is. That's what retired the old 4000-line cap here, which the escape
-          # pilot showed was the dominant escape mechanism (cap = coverage hole). This valve
-          # only guards PATHOLOGICAL diffs (>60k lines ≈ >800 KB) where even sharding + the
-          # flow's run budgets (max_tokens andon, wall-clock) would be swamped. Beyond it:
-          # keep whole files up to the budget, SOURCE files before tests, and close with an
-          # explicit manifest of what was left out — a partial review with honest coverage
-          # beats a dead job.
-          #
-          # Why per-prompt size matters (measured direct against Fireworks, print-farm#48,
-          # pre-sharding): an 8000-line diff rendered a ~110k-TOKEN reviewer prompt, and
-          # prefill of that on serverless gpt-oss-120b took 60-158s per call with 2.5x
-          # load-dependent VARIANCE. The tail exceeds Bun 1.3.11's hard 300s fetch ceiling,
-          # which the engine turns into a fatal run (theaiteam-dev/conduit-harness#89).
-          # max_tokens does NOT help — completions are only ~2.3k tokens; the time is PREFILL,
-          # which scales with prompt size. Those numbers are why the shard packer keeps
-          # slices small: per-call prefill stays off the ceiling by construction.
+          # SAFETY VALVE for pathological diffs only (>60k lines). Per-prompt sizing is the shard
+          # planner's job — each reviewer child sees only its shard's slice — so this is NOT a
+          # per-prompt cap. Beyond the budget: keep whole files, SOURCE before tests, and close with
+          # a manifest of what was omitted, so a partial review stays honest about its coverage.
           node -e '
             const fs = require("fs");
             const BUDGET = 60000; // SAFETY VALVE only — sharded fan-out owns sizing (classify shard plan); guards pathological >60k-line diffs
@@ -130,11 +104,9 @@ jobs:
           node -e 'const fs=require("fs");fs.writeFileSync("context.json",JSON.stringify({context:fs.existsSync("context.txt")?fs.readFileSync("context.txt","utf8"):""}))'
 
       - name: Log in to GHCR
-        # Needed only if the engine/flow image is private. Public images skip auth fine; this is
-        # harmless when the token can't see the package — the later pull just falls back to anon.
-        # MUST run before any step that pulls FLOW_IMAGE (e.g. the spider step below) — a private
-        # image pulled anonymously fails, and continue-on-error on that step would hide it, silently
-        # degrading the coupling graph to diff-derived edges on every run.
+        # The image is private, so this must succeed. MUST run before any step that pulls
+        # FLOW_IMAGE (the spider below) — that step is continue-on-error and would otherwise hide
+        # an auth failure, silently degrading the coupling graph on every run.
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -142,26 +114,17 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Spider the checkout (coupling graph + related-code pack)
-        # Deterministic, ~50ms, zero tokens. Two outputs, both by convention:
-        #   graph.json  — coupling graph; classify.mjs shards on it. Without it sharding falls
-        #                 back to diff-derived edges (lossier, still coupling-aware).
-        #   related.txt — the reviewers' RELATED CODE section: ~850 tokens of excerpts from
-        #                 UNCHANGED files the diff reaches (a helper it imports, the prisma
-        #                 models it touches, the API spec beside a changed route). Contract-class
-        #                 bugs live in those files, and reviewers otherwise never see them.
-        # This MUST happen here, not in the flow container: the container gets no checkout, only
-        # the files we docker cp in. Fallback on any failure is an empty pack — review still runs,
-        # just without the extra context.
-        # Runs after GHCR login so a private FLOW_IMAGE pulls authenticated, not anonymous.
+        # Deterministic, fast, zero tokens. Produces graph.json (the coupling graph sharding uses)
+        # and related.txt (excerpts from UNCHANGED files the diff reaches, for the reviewers'
+        # RELATED CODE section). MUST run here, not in the flow container: the container gets no
+        # checkout, only what we docker cp in. Any failure degrades to an empty pack.
         run: |
           # World-writable scratch dir: the image runs as its non-root `conduit` user, whose uid
           # does not match the runner's, so a plain bind-mounted dir is EACCES on first write.
           mkdir -p .spider-out && chmod 777 .spider-out
-          # --entrypoint bun is REQUIRED: the engine image's ENTRYPOINT is ["bun","src/cli/main.ts"],
-          # so a bare trailing command APPENDS to it instead of replacing it, and the workdir
-          # override then breaks the entrypoint's relative path ("Module not found src/cli/main.ts").
-          # Same pattern as the report-*/post-review steps. Latent since the step was written —
-          # only exposed once the FLOW_IMAGE env fix let this docker run execute at all.
+          # --entrypoint bun is REQUIRED: the image's ENTRYPOINT is ["bun","src/cli/main.ts"], so a
+          # bare trailing command APPENDS to it instead of replacing it. Same pattern as the
+          # report-*/post-review steps below.
           docker run --rm -v "$PWD:/repo:ro" -v "$PWD/.spider-out:/out" \
             -v "$PWD/diff.patch:/tmp/diff.patch:ro" --entrypoint bun "$FLOW_IMAGE" \
             /flow/src/spider.mjs /repo /out/graph.json --diff /tmp/diff.patch --pack /out/related.txt \
@@ -190,13 +153,10 @@ jobs:
           docker rm "$cid" >/dev/null
           envsubst '$REVIEWER_MODEL $COORDINATOR_MODEL' < flow.baked.yaml > flow.rendered.yaml
 
-          # Whole-run retry: a single stalled gateway call is FATAL to a conduit run today
-          # (theaiteam-dev/conduit-harness#89 — the engine retries 429/5xx but a stall that
-          # trips Bun's hard 300s fetch ceiling propagates as `fatal:`). Measured on
-          # print-farm#48: a stall costs ~$0.02-0.04 of discarded work, so re-running the
-          # whole flow is cheap insurance. Fresh state volume per attempt — re-entering run
-          # `default` on a used volume trips the engine's same-run-id UNIQUE constraint
-          # (conduit-harness#86). Drop this loop when #89 lands retry-on-stall.
+          # Whole-run retry: a stalled gateway call is currently fatal to a conduit run, and
+          # re-running the flow is cheap relative to losing it. Fresh state volume per attempt —
+          # re-entering the same run id on a used volume trips a UNIQUE constraint. Drop this loop
+          # once the engine retries on stall.
           rc=1
           for attempt in 1 2 3; do
             docker volume rm -f conduit_data >/dev/null 2>&1 || true
@@ -229,14 +189,10 @@ jobs:
           test -f review.json || { echo "no review.json produced"; exit 1; }
 
       - name: Explain run failure
-        # `conduit run` is silent between doctor preflight and exit — on a scrap the
-        # Action log shows nothing but "exit 1". The journal on the conduit_data volume
-        # has the whole story (lane transitions, terminal reasons, gate verdicts, one
-        # span per model call); report-failure.mjs prints it as a post-mortem. Failure
-        # runs only; same never-fail contract as the spend step below. The exit code is
-        # captured explicitly (default shell has no pipefail — a `docker | tee || true`
-        # pipeline would swallow docker's failure silently); a reporting failure emits a
-        # visible ::warning:: annotation instead of failing the job.
+        # `conduit run` is silent between preflight and exit, so a scrap shows only "exit 1".
+        # report-failure.mjs prints the journal (lane journeys, terminal reasons, gate verdicts,
+        # model-call spans) as a post-mortem. Never fails the job: the exit code is captured
+        # explicitly and a reporting failure emits a ::warning:: annotation instead.
         if: failure()
         run: |
           rc=0; out=$(docker run --rm -v conduit_data:/data \
@@ -245,16 +201,10 @@ jobs:
           else echo "::warning::Nitpick run post-mortem unavailable (docker exit $rc)"; fi
 
       - name: Report model spend
-        # Best-effort spend report for THIS run, written to the job summary. The engine
-        # journals per-call usage (model, tokens, cost) to /data — a named volume, so it
-        # outlives the run container's `docker rm`. A second container on the same volume
-        # queries it; report-cost.mjs never exits non-zero, and the trailing `|| true`
-        # covers docker itself failing (e.g. image pull failed) so reporting can never
-        # fail the job. `if: always()` keeps spend visible on failed runs — that's when
-        # runaway spend happens. Note: cost is computed tokens × price table unless a
-        # LiteLLM gateway reports real per-call cost (Fireworks direct does not). Exit
-        # code captured explicitly (no pipefail in the default shell) so a docker
-        # failure surfaces as a ::warning:: annotation instead of vanishing.
+        # Best-effort per-run spend table from the engine's journal, written to the job summary.
+        # `if: always()` keeps spend visible on failed runs — that's when runaway spend happens.
+        # Cost is tokens x price table unless the gateway reports real per-call cost. Never fails
+        # the job; a docker failure surfaces as a ::warning:: annotation.
         if: always()
         run: |
           rc=0; out=$(docker run --rm -v conduit_data:/data \
