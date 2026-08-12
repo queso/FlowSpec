@@ -80,6 +80,14 @@ This context helps agents understand what business goal they're preserving when 
 name: string                    # Identifier for the flow
 description: string             # Business context and intent
 
+setup:                          # Optional: steps to run once, in the same
+                                 # browser session, before `steps` (e.g.
+                                 # planting an auth session). Same grammar as
+                                 # `steps`. A flow-level `setup` replaces any
+                                 # config-level `setup` entirely; `setup: []`
+                                 # opts the flow out of setup altogether.
+  - visit: "/setup-path"
+
 steps:                          # Ordered user actions
   - visit: "/path"              # Navigate to URL
   - click: "Button Text"        # Click element by visible text

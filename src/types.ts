@@ -66,6 +66,7 @@ export type FlowStep = z.infer<typeof FlowStepSchema>;
 export const FlowSpecSchema = z.object({
   name: z.string(),
   description: z.string(),
+  setup: z.array(FlowStepSchema).optional(),
   steps: z.array(FlowStepSchema).min(1),
   expect: z.array(StepAssertionSchema).min(1),
 });
@@ -78,6 +79,7 @@ export type FlowSpec = z.infer<typeof FlowSpecSchema>;
  */
 export const FlowErrorSchema = z.object({
   message: z.string(),
+  phase: z.literal("setup").optional(),
   step: z.number().optional(),
   action: StepActionSchema.optional(),
   assertion: StepAssertionSchema.optional(),
@@ -95,6 +97,7 @@ export const FlowResultSchema = z.object({
   flowName: z.string(),
   duration: z.number(),
   error: FlowErrorSchema.optional(),
+  skipped: z.boolean().optional(),
 });
 
 export type FlowResult = z.infer<typeof FlowResultSchema>;

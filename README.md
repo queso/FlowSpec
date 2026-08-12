@@ -108,13 +108,48 @@ specsDir: specs/
 
 CLI options override config file values.
 
+#### Setup: Shared Steps Before Every Flow
+
+A `setup` block runs once per flow, inside that flow's own browser session, immediately before its `steps`. It's the way to establish state every flow needs — most commonly, authenticating against a password-protected preview deployment.
+
+For example, a Shopify Oxygen-style preview URL that gates access behind a token query param:
+
+```yaml
+# flowspec.config.yaml
+baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
+setup:
+  - visit: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
+```
+
+Visiting the token URL plants a session cookie, so every flow that follows runs against an authenticated session without needing its own login steps. Without this, every flow fails with a misleading "could not find element" on what looks like the login page — the real problem is the preview deployment never let the browser past auth in the first place.
+
+`setup` can also be declared per-flow (see [Flow File Format](#flow-file-format)):
+
+- A flow-level `setup` **replaces** the config-level `setup` entirely — it does not merge with it.
+- An explicit `setup: []` on a flow opts that flow out of setup altogether, which is useful for a flow that specifically tests the unauthenticated state.
+
+**Failure behavior:** if a shared (config-level) `setup` step fails, the run aborts immediately — that flow is reported as failed with a `Setup step N:` error, and every remaining flow is reported as skipped, since a broken shared setup means every subsequent flow would fail the same way. If a flow-level `setup` step fails, only that one flow fails; the run continues normally with the remaining flows.
+
+#### ${VAR} Interpolation
+
+String values in `flowspec.config.yaml` — `baseUrl`, `specsDir`, and any string inside `setup` — support `${VAR_NAME}` references, resolved from `process.env` when the config is loaded:
+
+```yaml
+baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
+```
+
+This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file (loaded by Bun/Node — FlowSpec itself does not read `.env` files).
+
+- Interpolation applies to config file string values only. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted.
+- A referenced variable that isn't set in `process.env` is a hard error: FlowSpec exits with code 2 and prints a message naming the missing variable and the config file path, before parsing any flow file or opening any browser session.
+
 ### Exit Codes
 
 | Code | Meaning |
 | ---- | ------- |
 | 0 | All flows passed |
 | 1 | One or more flows failed |
-| 2 | Parse error (invalid YAML or schema) |
+| 2 | Parse error, or a config file that fails to load or validate (invalid YAML, schema, or an unset `${VAR}`) |
 
 ## Flow File Format
 
@@ -133,6 +168,27 @@ expect:
   - url: /dashboard
   - visible: Welcome back
 ```
+
+### Setup (Optional)
+
+A flow can declare its own `setup` block — steps that run once, in the same browser session, before `steps`. It uses the same step grammar as `steps` (see [Step Actions](#step-actions) below):
+
+```yaml
+name: admin-only-page
+description: Admin user can view the settings panel
+setup:
+  - visit: /login
+  - fill:
+      Email: admin@example.com
+      Password: adminpassword
+  - click: Sign In
+steps:
+  - visit: /admin/settings
+expect:
+  - visible: Settings
+```
+
+A flow-level `setup` **replaces** any `setup` configured in `flowspec.config.yaml` — it does not merge with it. An explicit `setup: []` opts the flow out of setup entirely, even when the config file defines one (useful for a flow that specifically exercises the unauthenticated state). See [Setup: Shared Steps Before Every Flow](#setup-shared-steps-before-every-flow) for the config-level version and the run-abort behavior when a shared setup fails.
 
 ### Step Actions
 

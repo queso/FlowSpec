@@ -4,6 +4,7 @@ import type {
   FlowError,
   FlowResult,
   FlowSpec,
+  FlowStep,
   StepAction,
   StepAssertion,
 } from "./types.js";
@@ -35,6 +36,7 @@ declare global {
 export interface RunnerOptions {
   baseUrl?: string;
   timeout?: number;
+  setup?: FlowStep[];
 }
 
 /**
@@ -597,6 +599,41 @@ export async function runFlow(
   const session = generateSessionName();
 
   try {
+    // Resolve the effective setup: a flow-level setup block replaces the
+    // config/CLI-level one entirely (no merging). An empty array is not
+    // nullish, so an explicit `setup: []` on the flow opts out even when
+    // options.setup is supplied.
+    const setupSteps = flow.setup ?? options?.setup;
+
+    // Execute setup steps (if any) in the same browser session, before the
+    // flow's own steps, so state established during setup (e.g. an auth
+    // cookie) is observed by everything that follows. Read-only iteration —
+    // the setup array may be shared/aliased by the caller and must not be
+    // mutated.
+    if (setupSteps && setupSteps.length > 0) {
+      for (let setupIndex = 0; setupIndex < setupSteps.length; setupIndex++) {
+        const step = setupSteps[setupIndex];
+
+        try {
+          await executeStep(step, baseUrl, session, timeout);
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          return {
+            success: false,
+            flowName: flow.name,
+            duration: Date.now() - startTime,
+            error: {
+              message: errorMessage,
+              phase: "setup",
+              step: setupIndex,
+              action: step,
+            },
+          };
+        }
+      }
+    }
+
     // Execute all steps
     for (let stepIndex = 0; stepIndex < flow.steps.length; stepIndex++) {
       const step = flow.steps[stepIndex];

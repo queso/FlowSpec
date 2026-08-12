@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Session Check</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 400px;
+      margin: 2rem auto;
+      padding: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="status">Checking...</h1>
+  <script>
+    var authenticated = document.cookie.split("; ").some(function (entry) {
+      return entry === "flowspec_session=granted";
+    });
+    document.getElementById("status").textContent = authenticated
+      ? "Authenticated"
+      : "Not authenticated";
+  </script>
+</body>
+</html>

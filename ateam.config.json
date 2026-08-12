@@ -3,7 +3,7 @@
   "checks": {
     "lint": "bun run lint",
     "typecheck": "bun run typecheck",
-    "unit": "bun test"
+    "unit": "bun run test"
   },
   "precheck": ["lint", "typecheck", "unit"],
   "postcheck": ["lint", "typecheck", "unit"]

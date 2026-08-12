@@ -12,3 +12,6 @@ dist/
 
 # OS files
 .DS_Store
+
+# A(i)-Team observer logs
+.ateam-observer-failures.log

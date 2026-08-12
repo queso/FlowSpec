@@ -6,7 +6,7 @@ import { formatInitResult, initProject } from "./init.js";
 import { parseFlowFile } from "./parser.js";
 import { formatResult, formatSummary } from "./reporter.js";
 import { DEFAULT_TIMEOUT, runFlow } from "./runner.js";
-import type { FlowResult, FlowSpec } from "./types.js";
+import type { FlowResult, FlowSpec, FlowStep } from "./types.js";
 
 interface CliOptions {
   path?: string;
@@ -125,14 +125,44 @@ function parseFlowFiles(filePaths: string[]): {
 async function runFlows(
   parsedFlows: ParsedFlow[],
   baseUrl: string,
-  timeout?: number,
+  timeout: number | undefined,
+  configSetup: FlowStep[] | undefined,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
-  for (const { flow } of parsedFlows) {
-    const result = await runFlow(flow, { baseUrl, timeout });
+  for (let i = 0; i < parsedFlows.length; i++) {
+    const { flow } = parsedFlows[i];
+    const result = await runFlow(flow, {
+      baseUrl,
+      timeout,
+      setup: configSetup,
+    });
     console.log(formatResult(result));
     results.push(result);
+
+    // A setup failure "came from config" exactly when this flow declared no
+    // setup of its own (an explicit empty list means the flow opted out and
+    // cannot have failed in setup at all). A shared setup failing means
+    // every remaining flow would fail the same way, so stop the run and
+    // report the rest as skipped rather than repeating the same error.
+    const failedSetupFromConfig =
+      !result.success &&
+      result.error?.phase === "setup" &&
+      flow.setup === undefined;
+
+    if (failedSetupFromConfig) {
+      for (let j = i + 1; j < parsedFlows.length; j++) {
+        const skippedResult: FlowResult = {
+          success: false,
+          flowName: parsedFlows[j].flow.name,
+          duration: 0,
+          skipped: true,
+        };
+        console.log(formatResult(skippedResult));
+        results.push(skippedResult);
+      }
+      break;
+    }
   }
 
   return results;
@@ -194,12 +224,21 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Load configuration and merge with CLI options
-  const config = loadConfig();
-  const mergedConfig = mergeConfig(config, {
-    baseUrl: options.baseUrl,
-    timeout: options.timeout,
-  });
+  // Load configuration and merge with CLI options. A misconfigured project
+  // (bad YAML, failed schema validation, an unresolved ${VAR}) must fail
+  // fast with exit code 2 — before any flow is parsed and before any
+  // browser session opens — matching the existing parse-error contract.
+  let mergedConfig: ReturnType<typeof mergeConfig>;
+  try {
+    const config = loadConfig();
+    mergedConfig = mergeConfig(config, {
+      baseUrl: options.baseUrl,
+      timeout: options.timeout,
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(2);
+  }
 
   const flowFiles = discoverFlowFiles(options.path);
 
@@ -225,6 +264,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
     flows,
     mergedConfig.baseUrl,
     mergedConfig.timeout,
+    mergedConfig.setup,
   );
 
   // Print summary
