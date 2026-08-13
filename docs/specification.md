@@ -86,7 +86,8 @@ setup:                          # Optional: steps to run once, in the same
                                  # `steps`. A flow-level `setup` replaces any
                                  # config-level `setup` entirely; `setup: []`
                                  # opts the flow out of setup altogether.
-  - visit: "/setup-path"
+  - visit: "/setup-path"        # Relative paths resolve against baseUrl's
+                                 # origin and path only — see the note below.
 
 steps:                          # Ordered user actions
   - visit: "/path"              # Navigate to URL
@@ -103,6 +104,13 @@ expect:                         # Assertions after steps complete
   - matches: "regex pattern"    # Text matching pattern is visible
   - not_visible: "Text"         # Text is not visible
 ```
+
+A relative `visit:` path is resolved against `baseUrl`'s origin and path only — a
+query string on `baseUrl` is **not** carried over. A setup step that must land on a
+URL carrying a token query param (`https://preview.example.dev?_ab=TOKEN`) has to
+spell that URL out absolutely; writing `visit: "/"` against that `baseUrl` navigates
+to `https://preview.example.dev/` with the token stripped, and whatever session the
+token would have planted is never established.
 
 ### Full Example
 

@@ -170,6 +170,34 @@ describe("formatSummary skipped count", () => {
     expect(output).toBe("2 flows: 1 passed, 0 failed, 1 skipped");
   });
 
+  it("never reports a negative count for a contract-violating success+skipped result", () => {
+    // Adversarial construction: {success: true, skipped: true} is schema-legal
+    // (both fields independent in FlowResultSchema) but violates the runner's
+    // contract. Deriving failed by subtraction double-counts it and underflows.
+    const results: FlowResult[] = [
+      { success: true, flowName: "a", duration: 1, skipped: true },
+    ];
+
+    const output = formatSummary(results);
+
+    expect(output).not.toMatch(/-\d/);
+    expect(output).toBe("1 flow: 0 passed, 0 failed, 1 skipped");
+  });
+
+  it("counts a contract-violating success+skipped result as skipped, not passed, without losing real failures", () => {
+    const results: FlowResult[] = [
+      { success: true, flowName: "a", duration: 1 },
+      { success: false, flowName: "b", duration: 2, error: { message: "x" } },
+      { success: true, flowName: "c", duration: 0, skipped: true },
+    ];
+
+    const output = formatSummary(results);
+
+    expect(output).not.toMatch(/-\d/);
+    // The malformed result lands in skipped only; the genuine failure survives.
+    expect(output).toBe("3 flows: 1 passed, 1 failed, 1 skipped");
+  });
+
   it("treats skipped: false the same as skipped being omitted (not counted as skipped)", () => {
     const results: FlowResult[] = [
       { success: true, flowName: "a", duration: 1, skipped: false },

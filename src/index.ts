@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig, mergeConfig } from "./config.js";
+import { CONFIG_FILE_NAME, loadConfig, mergeConfig } from "./config.js";
 import { formatInitResult, initProject } from "./init.js";
 import { parseFlowFile } from "./parser.js";
 import { formatResult, formatSummary } from "./reporter.js";
@@ -39,7 +39,8 @@ Init Command Options:
 Exit codes:
   0  All flows passed
   1  One or more flows failed
-  2  Parse error (invalid YAML/schema)
+  2  Parse error, or a config file that fails to load or validate
+     (invalid YAML, schema, or an unset \${VAR})
 `);
 }
 
@@ -151,6 +152,14 @@ async function runFlows(
       flow.setup === undefined;
 
     if (failedSetupFromConfig) {
+      // Say why the run stopped. Without this, the trailing "skipped" flows
+      // read as an unexplained truncation rather than a deliberate abort.
+      if (i + 1 < parsedFlows.length) {
+        console.log(
+          `Aborting run: the shared setup in ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`,
+        );
+      }
+
       for (let j = i + 1; j < parsedFlows.length; j++) {
         const skippedResult: FlowResult = {
           success: false,

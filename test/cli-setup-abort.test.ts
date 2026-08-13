@@ -10,7 +10,8 @@
  *  - a run where every failure is flow-level (no shared setup involved)
  *    never aborts
  *  - exit codes: 0 success / 1 flows-ran-and-failed / 2 misconfigured
- *  - a malformed config file fails fast (before any flow parses or any
+ *  - a malformed config file — bad YAML, failed schema validation, or an
+ *    unset ${VAR} reference — fails fast (before any flow parses or any
  *    browser session opens) with a clean stderr message and exit code 2
  *
  * These are real CLI subprocess + real-browser integration tests, following
@@ -20,7 +21,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { hasBrowserBinaries } from "./helpers/has-browser";
 import { createTestServer, type TestServer } from "./server";
@@ -29,7 +30,7 @@ const CLI_PATH = join(__dirname, "..", "src", "index.ts");
 
 async function runCLI(
   args: string[],
-  options: { cwd: string; timeout?: number },
+  options: { cwd: string; timeout?: number; env?: NodeJS.ProcessEnv },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const timeout = options.timeout ?? 20000;
 
@@ -37,6 +38,8 @@ async function runCLI(
     const child = spawn("bun", ["run", CLI_PATH, ...args], {
       cwd: options.cwd,
       timeout,
+      // Omitted -> inherit process.env, as every other test here expects.
+      ...(options.env ? { env: options.env } : {}),
     });
 
     let stdout = "";
@@ -169,6 +172,10 @@ expect:
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain("Setup step 0");
     expect(result.stdout).toMatch(/skip/i);
+    // The abort is a decision the run made on the user's behalf, so it has to
+    // say so — otherwise "skipped" flows look like an unexplained truncation.
+    expect(result.stdout).toMatch(/Aborting run/);
+    expect(result.stdout).toContain("flowspec.config.yaml");
     // The two skipped flows never ran, so no "Step N:" execution line for
     // them. The one real step line is rendered lowercase as "Setup step 0:"
     // per WI-771's reporter contract (test/reporter-setup.test.ts pins the
@@ -364,6 +371,49 @@ expect:
     expect(result.exitCode).toBe(2);
     expect(result.stderr).not.toContain("Unexpected error:");
     expect(result.stderr + result.stdout).toMatch(/invalid configuration/i);
+    expect(result.stdout).not.toContain("would-run");
+    expect(result.stdout).not.toMatch(/\d+ flows?:/);
+  });
+
+  // Title avoids a literal dollar-brace so Biome's noTemplateCurlyInString
+  // stays quiet; the case under test is an unset ${VAR} config reference.
+  it("exits 2 naming the variable and the config file when an interpolated variable is unset, before any flow parses", async () => {
+    tempDir = freshTempDir("unset-config-var");
+    const missingVar = "FLOWSPEC_TEST_DEFINITELY_UNSET";
+    writeFileSync(
+      join(tempDir, "flowspec.config.yaml"),
+      `baseUrl: http://localhost:3000?token=\${${missingVar}}\n`,
+    );
+    writeFileSync(
+      join(tempDir, "flows", "would-run.flow.yaml"),
+      `name: would-run
+description: must never be reached
+steps:
+  - visit: /home
+expect:
+  - visible: Home
+`,
+    );
+
+    // Explicit env copy minus the variable: inheriting process.env would let a
+    // stray export in the developer's shell (or CI) turn this green.
+    const { [missingVar]: _omitted, ...env } = process.env;
+
+    const result = await runCLI(
+      ["run", join(tempDir, "flows"), "--timeout", "2000"],
+      {
+        cwd: tempDir,
+        env,
+      },
+    );
+
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).not.toContain("Unexpected error:");
+    expect(result.stderr).toContain(missingVar);
+    // Assert the path by its two identifying parts rather than the exact
+    // string: cwd resolution can prefix the temp dir (e.g. /private on macOS).
+    expect(result.stderr).toContain("flowspec.config.yaml");
+    expect(result.stderr).toContain(basename(tempDir));
     expect(result.stdout).not.toContain("would-run");
     expect(result.stdout).not.toMatch(/\d+ flows?:/);
   });

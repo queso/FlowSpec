@@ -95,9 +95,12 @@ export function formatResult(result: FlowResult): string {
  */
 export function formatSummary(results: FlowResult[]): string {
   const total = results.length;
-  const passed = results.filter((r) => r.success).length;
+  // Bucket by construction rather than by subtraction: a malformed result
+  // (success: true alongside skipped: true) is schema-legal, and deriving
+  // failed as total - passed - skipped would double-count it into a negative.
   const skipped = results.filter((r) => r.skipped === true).length;
-  const failed = total - passed - skipped;
+  const passed = results.filter((r) => r.success && r.skipped !== true).length;
+  const failed = results.filter((r) => !r.success && r.skipped !== true).length;
 
   const flowWord = total === 1 ? "flow" : "flows";
   const skippedClause = skipped > 0 ? `, ${skipped} skipped` : "";

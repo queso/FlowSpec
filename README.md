@@ -123,10 +123,12 @@ setup:
 
 Visiting the token URL plants a session cookie, so every flow that follows runs against an authenticated session without needing its own login steps. Without this, every flow fails with a misleading "could not find element" on what looks like the login page — the real problem is the preview deployment never let the browser past auth in the first place.
 
+**Spell the token URL out in full.** That's why the example above repeats the whole URL in `setup` instead of writing `- visit: /`. A relative `visit:` is resolved against `baseUrl`'s origin and path only — a query string on `baseUrl` is **not** carried over. With `baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}`, a setup step of `- visit: /` navigates to `https://preview-abc123.myshopify.dev/` with no `_ab` param, so the auth cookie is never planted and every flow fails the same misleading way. Any setup step that must hit the token URL has to write it out absolutely.
+
 `setup` can also be declared per-flow (see [Flow File Format](#flow-file-format)):
 
 - A flow-level `setup` **replaces** the config-level `setup` entirely — it does not merge with it.
-- An explicit `setup: []` on a flow opts that flow out of setup altogether, which is useful for a flow that specifically tests the unauthenticated state.
+- An explicit `setup: []` on a flow opts that flow out of setup altogether, which is useful for a flow that specifically tests the unauthenticated state. Note that this opt-out does not survive a shared-setup failure: when the config-level `setup` fails the run aborts, and every remaining flow is reported as skipped — including `setup: []` flows and flows carrying their own `setup` block.
 
 **Failure behavior:** if a shared (config-level) `setup` step fails, the run aborts immediately — that flow is reported as failed with a `Setup step N:` error, and every remaining flow is reported as skipped, since a broken shared setup means every subsequent flow would fail the same way. If a flow-level `setup` step fails, only that one flow fails; the run continues normally with the remaining flows.
 
@@ -138,7 +140,7 @@ String values in `flowspec.config.yaml` — `baseUrl`, `specsDir`, and any strin
 baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
 ```
 
-This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file (loaded by Bun/Node — FlowSpec itself does not read `.env` files).
+This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file. Bun loads `.env` automatically; under Node pass `--env-file=.env` (Node 20.6+) or preload dotenv. FlowSpec itself never reads `.env` files.
 
 - Interpolation applies to config file string values only. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted.
 - A referenced variable that isn't set in `process.env` is a hard error: FlowSpec exits with code 2 and prints a message naming the missing variable and the config file path, before parsing any flow file or opening any browser session.
