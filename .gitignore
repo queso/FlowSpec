@@ -15,3 +15,7 @@ dist/
 
 # A(i)-Team observer logs
 .ateam-observer-failures.log
+
+# Environment variables
+.env
+.env.local

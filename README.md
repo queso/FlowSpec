@@ -140,7 +140,7 @@ String values in `flowspec.config.yaml` — `baseUrl`, `specsDir`, and any strin
 baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
 ```
 
-This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file. Bun loads `.env` automatically; under Node pass `--env-file=.env` (Node 20.6+) or preload dotenv. FlowSpec itself never reads `.env` files.
+This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file. Bun loads `.env` automatically; under Node pass `--env-file=.env` (Node 20.6+) or preload dotenv. FlowSpec itself never reads `.env` files. If you use a `.env` file, make sure it is listed in your project's `.gitignore` — moving the token out of `flowspec.config.yaml` and into a committed `.env` defeats the purpose.
 
 - Interpolation applies to config file string values only. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted.
 - A referenced variable that isn't set in `process.env` is a hard error: FlowSpec exits with code 2 and prints a message naming the missing variable and the config file path, before parsing any flow file or opening any browser session.

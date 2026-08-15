@@ -271,6 +271,11 @@ expect:
     expect(result.stdout).not.toMatch(/skip/i);
   });
 
+  // This test makes two sequential runCLI calls, each with the default 20s
+  // subprocess timeout (see `runCLI`'s `timeout` option default above), so
+  // the worst case is 40s — past the 30s per-test budget the suite runs
+  // under (`bun run test`). Give it a per-test timeout via bun:test's third
+  // argument to it() so it doesn't flake on slower CI.
   it("exits 0 on success and 1 on failure exactly as today when no setup is configured anywhere", async () => {
     tempDir = freshTempDir("no-setup-regression");
     // No flowspec.config.yaml at all -> DEFAULT_CONFIG, no setup.
@@ -309,7 +314,7 @@ expect:
     );
     expect(failResult.exitCode).toBe(1);
     expect(failResult.stdout).not.toMatch(/skip/i);
-  });
+  }, 45000);
 });
 
 describe("CLI malformed config exit-code contract", () => {

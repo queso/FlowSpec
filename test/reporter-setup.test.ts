@@ -171,9 +171,12 @@ describe("formatSummary skipped count", () => {
   });
 
   it("never reports a negative count for a contract-violating success+skipped result", () => {
-    // Adversarial construction: {success: true, skipped: true} is schema-legal
-    // (both fields independent in FlowResultSchema) but violates the runner's
-    // contract. Deriving failed by subtraction double-counts it and underflows.
+    // Adversarial construction: FlowResultSchema now rejects {success: true,
+    // skipped: true} via .refine(), but formatSummary is a public export that
+    // can still receive unvalidated objects (e.g. constructed by hand, as
+    // here, bypassing safeParse/parse). The defensive counting below is
+    // belt-and-braces for that unvalidated-input case. Deriving failed by
+    // subtraction would double-count it and underflow.
     const results: FlowResult[] = [
       { success: true, flowName: "a", duration: 1, skipped: true },
     ];

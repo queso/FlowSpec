@@ -16,7 +16,7 @@ FlowSpec jumps straight to the path in each flow's first `visit` step and never 
 base URL, so the cookie is never planted. Every flow then fails on a redirect to the login
 page:
 
-```
+```text
 ✗ add-to-cart (1.861s)
   Step 1: click "Crystal Dragon - Fairy Dusk"
   Error: Could not find element with text "Crystal Dragon - Fairy Dusk" on
@@ -124,7 +124,7 @@ current meaning when absent so no existing consumer breaks.
 The reporter should then label these distinctly, because "your setup failed" and "your app is
 broken" call for completely different responses from the user:
 
-```
+```text
 ✗ add-to-cart (0.9s)
   Setup step 0: visit "/"
   Error: Could not find element with text "Sign In" on "https://accounts.shopify.com/select"
@@ -143,7 +143,7 @@ time:
 ```yaml
 baseUrl: https://preview.myshopify.dev?_auth=${PREVIEW_TOKEN}
 setup:
-  - visit: /
+  - visit: https://preview.myshopify.dev?_auth=${PREVIEW_TOKEN}
 ```
 
 Four semantics, each chosen against a specific failure mode:

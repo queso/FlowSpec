@@ -226,4 +226,53 @@ describe("FlowResultSchema skipped field", () => {
       expect("status" in result.data).toBe(false);
     }
   });
+
+  it("rejects the contradictory success: true, skipped: true, naming the contradiction", () => {
+    const result = FlowResultSchema.safeParse({
+      success: true,
+      flowName: "test",
+      duration: 100,
+      skipped: true,
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toMatch(
+        /skipped flow cannot be successful/i,
+      );
+    }
+  });
+
+  it("still parses success: false, skipped: true (the valid skipped shape)", () => {
+    const result = FlowResultSchema.safeParse({
+      success: false,
+      flowName: "test",
+      duration: 0,
+      skipped: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.success).toBe(false);
+      expect(result.data.skipped).toBe(true);
+    }
+  });
+
+  it("still parses success: true with skipped absent or skipped: false (only true+true is contradictory)", () => {
+    const withoutSkipped = FlowResultSchema.safeParse({
+      success: true,
+      flowName: "test",
+      duration: 100,
+    });
+    expect(withoutSkipped.success).toBe(true);
+
+    const withSkippedFalse = FlowResultSchema.safeParse({
+      success: true,
+      flowName: "test",
+      duration: 100,
+      skipped: false,
+    });
+    expect(withSkippedFalse.success).toBe(true);
+    if (withSkippedFalse.success) {
+      expect(withSkippedFalse.data.skipped).toBe(false);
+    }
+  });
 });
