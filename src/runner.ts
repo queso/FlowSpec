@@ -4,6 +4,7 @@ import type {
   FlowError,
   FlowResult,
   FlowSpec,
+  FlowStep,
   StepAction,
   StepAssertion,
 } from "./types.js";
@@ -35,6 +36,24 @@ declare global {
 export interface RunnerOptions {
   baseUrl?: string;
   timeout?: number;
+  setup?: FlowStep[];
+  headers?: Record<string, string>;
+  /**
+   * How far the configured headers travel. Defaults to "origin": headers go
+   * only to baseUrl's origin, so a bypass token never rides along to a CDN,
+   * an analytics pixel, or any other third party the page happens to touch.
+   * "all" is the deliberate opt-out — context-wide, every request, every host.
+   */
+  headersScope?: "origin" | "all";
+}
+
+/**
+ * Headers scoped to a single origin: the origin they may be sent to, and the
+ * JSON document agent-browser's `--headers` option expects.
+ */
+interface ScopedHeaders {
+  origin: string;
+  json: string;
 }
 
 /**
@@ -55,18 +74,6 @@ function sleep(ms: number): Promise<void> {
 }
 
 const DEFAULT_BASE_URL = "http://localhost:3456";
-
-/**
- * Escape a string for safe use in shell commands.
- * Uses single quotes and escapes any single quotes within the string.
- * This prevents command injection via backticks, $(), etc.
- */
-function shellEscape(str: string): string {
-  // Single-quote the entire string and escape any embedded single quotes
-  // 'foo' -> 'foo'
-  // "it's" -> 'it'"'"'s'
-  return `'${str.replace(/'/g, "'\"'\"'")}'`;
-}
 
 /**
  * Generate a unique session name for isolation between test runs
@@ -155,20 +162,25 @@ async function execCommand(
 }
 
 /**
- * Execute an agent-browser command and return the output
+ * Execute an agent-browser command and return the output.
+ *
+ * Takes the command as an argv array — one element per argument — which is
+ * handed straight to spawn. No shell is involved anywhere in this path, so
+ * arguments need no quoting or escaping: whatever bytes a caller puts in an
+ * element are exactly the bytes agent-browser receives, quotes, spaces,
+ * backticks and `$(...)` included.
  */
-async function execBrowser(command: string, session: string): Promise<string> {
+async function execBrowserArgs(
+  args: string[],
+  session: string,
+): Promise<string> {
   const browserPath = getAgentBrowserPath();
 
-  // Parse command into args array - handle quoted strings
-  const args = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-  // Remove quotes from args
-  const cleanArgs = args.map((arg) => arg.replace(/^["']|["']$/g, ""));
-
-  // Build full args array
-  const fullArgs = ["--session", session, ...cleanArgs];
-
-  const result = await execCommand(browserPath, fullArgs);
+  const result = await execCommand(browserPath, [
+    "--session",
+    session,
+    ...args,
+  ]);
 
   if (result.exitCode !== 0) {
     // Include both stderr and stdout in error for debugging
@@ -184,7 +196,10 @@ async function execBrowser(command: string, session: string): Promise<string> {
  * Get the current page URL
  */
 async function getCurrentUrl(session: string): Promise<string> {
-  const result = await execBrowser('eval "window.location.href"', session);
+  const result = await execBrowserArgs(
+    ["eval", "window.location.href"],
+    session,
+  );
   return result.trim();
 }
 
@@ -192,14 +207,14 @@ async function getCurrentUrl(session: string): Promise<string> {
  * Get the current page text content
  */
 async function getPageContent(session: string): Promise<string> {
-  return execBrowser("snapshot", session);
+  return execBrowserArgs(["snapshot"], session);
 }
 
 /**
  * Get interactive elements with refs
  */
 async function getInteractiveSnapshot(session: string): Promise<string> {
-  return execBrowser("snapshot", session);
+  return execBrowserArgs(["snapshot"], session);
 }
 
 /**
@@ -271,17 +286,61 @@ function findFieldRefByLabel(
 }
 
 /**
+ * Build the `--headers` arguments for a navigation, if this navigation is the
+ * one allowed to carry them.
+ *
+ * agent-browser's global `--headers <json>` option is consumed only by the
+ * `open` command, and it scopes the headers to the OPENED url's host — it
+ * registers a request-route interception for that host rather than setting
+ * them context-wide. Passing it on an open to a different origin would scope
+ * the token to *that* origin, which is the leak this whole path exists to
+ * avoid, so a non-matching navigation gets no header arguments at all.
+ *
+ * Two consequences worth knowing, both verified against agent-browser:
+ *  - The scoping persists for the rest of the session, so re-passing it on
+ *    every matching navigation is idempotent, not repeated work undone.
+ *  - agent-browser matches on host, ignoring scheme. Requests to the same
+ *    host over a different scheme are therefore also covered once the route
+ *    is registered; the origin check here is the stricter of the two.
+ */
+function visitHeaderArgs(
+  fullUrl: string,
+  scopedHeaders: ScopedHeaders | undefined,
+): string[] {
+  if (!scopedHeaders) {
+    return [];
+  }
+
+  let origin: string;
+  try {
+    origin = new URL(fullUrl).origin;
+  } catch {
+    // Not a URL we can reason about — let the open itself report the problem
+    // rather than attaching a token to something unparseable.
+    return [];
+  }
+
+  return origin === scopedHeaders.origin
+    ? ["--headers", scopedHeaders.json]
+    : [];
+}
+
+/**
  * Execute a visit step
  */
 async function executeVisit(
   url: string,
   baseUrl: string,
   session: string,
+  scopedHeaders?: ScopedHeaders,
 ): Promise<void> {
   const fullUrl = url.startsWith("http")
     ? url
     : new URL(url, baseUrl).toString();
-  await execBrowser(`open ${shellEscape(fullUrl)}`, session);
+  await execBrowserArgs(
+    [...visitHeaderArgs(fullUrl, scopedHeaders), "open", fullUrl],
+    session,
+  );
 }
 
 /**
@@ -301,7 +360,7 @@ async function executeClick(
     );
   }
 
-  await execBrowser(`click ${ref}`, session);
+  await execBrowserArgs(["click", ref], session);
 }
 
 /**
@@ -324,7 +383,7 @@ async function executeFill(
     }
 
     // Use fill to clear and set value
-    await execBrowser(`fill ${ref} ${shellEscape(value)}`, session);
+    await execBrowserArgs(["fill", ref, value], session);
   }
 }
 
@@ -347,7 +406,7 @@ async function executeSelect(
       );
     }
 
-    await execBrowser(`select ${ref} ${shellEscape(option)}`, session);
+    await execBrowserArgs(["select", ref, option], session);
   }
 }
 
@@ -415,9 +474,10 @@ async function executeStep(
   baseUrl: string,
   session: string,
   timeout: number,
+  scopedHeaders?: ScopedHeaders,
 ): Promise<void> {
   if ("visit" in step) {
-    await executeVisit(step.visit, baseUrl, session);
+    await executeVisit(step.visit, baseUrl, session, scopedHeaders);
   } else if ("click" in step) {
     await executeClick(step.click, session);
   } else if ("fill" in step) {
@@ -571,11 +631,70 @@ async function executeAssertion(
 }
 
 /**
+ * RFC 7230 field-name grammar: a header name is one or more "token"
+ * characters. Anything else (a space, a colon, a non-ASCII byte) is not a
+ * header name.
+ */
+const HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * Bytes that can never appear in a header value: NUL, and the CR/LF pair that
+ * would let a value inject a second header or terminate the head section.
+ */
+const HEADER_VALUE_FORBIDDEN_REGEX = /[\0\r\n]/;
+
+/**
+ * Reject malformed headers before any browser command runs.
+ *
+ * This is not belt-and-braces: the two scopes fail very differently without
+ * it. Context-wide headers go through Playwright's setExtraHTTPHeaders, which
+ * rejects a bad name promptly. Origin-scoped headers are applied by a request
+ * route that rewrites headers mid-flight, and a bad name makes that route
+ * throw *inside* the interception handler — the request is then never
+ * fulfilled and the navigation hangs indefinitely rather than failing. A flow
+ * that hangs tells the user nothing; a checked, named error tells them
+ * exactly which header to fix.
+ *
+ * Read-only access to the headers object — it may be shared by the caller.
+ */
+function validateHeaders(headers: Record<string, string>): void {
+  for (const [name, value] of Object.entries(headers)) {
+    if (!HEADER_NAME_REGEX.test(name)) {
+      throw new Error(
+        `invalid header name ${JSON.stringify(name)} - HTTP header names may only contain letters, digits and !#$%&'*+-.^_\`|~`,
+      );
+    }
+
+    if (HEADER_VALUE_FORBIDDEN_REGEX.test(value)) {
+      throw new Error(
+        `invalid value for header ${JSON.stringify(name)} - HTTP header values may not contain NUL, carriage return or line feed`,
+      );
+    }
+  }
+}
+
+/**
+ * Apply extra HTTP headers context-wide (headersScope: "all").
+ *
+ * The session persists across agent-browser invocations, so setting them once
+ * up front covers every request the flow makes afterwards — including
+ * requests to origins that are not the one under test, which is exactly why
+ * this is the opt-in path and not the default. Read-only access to the
+ * headers object — it may be shared/aliased by the caller.
+ */
+async function applyHeaders(
+  headers: Record<string, string>,
+  session: string,
+): Promise<void> {
+  await execBrowserArgs(["set", "headers", JSON.stringify(headers)], session);
+}
+
+/**
  * Close a browser session
  */
 async function closeBrowserSession(session: string): Promise<void> {
   try {
-    await execBrowser("close", session);
+    await execBrowserArgs(["close"], session);
   } catch {
     // Ignore errors when closing - session may already be closed
   }
@@ -596,13 +715,91 @@ export async function runFlow(
   const timeout = options?.timeout ?? DEFAULT_TIMEOUT;
   const session = generateSessionName();
 
+  // Headers scoped to baseUrl's origin, attached to each matching navigation
+  // (see visitHeaderArgs). Stays undefined for scope "all" and for flows with
+  // no headers at all.
+  let scopedHeaders: ScopedHeaders | undefined;
+
   try {
+    // Apply configured headers before anything else touches the browser, so
+    // setup steps and flow steps alike make their requests with the headers
+    // already in place. With no headers configured (undefined or empty), no
+    // browser command is issued at all — flows without headers pay nothing.
+    const headers = options?.headers;
+    if (headers && Object.keys(headers).length > 0) {
+      try {
+        validateHeaders(headers);
+
+        // "origin" is the default: a token configured for the deployment
+        // under test must not be handed to every third-party host the page
+        // touches. "all" restores context-wide headers for callers who
+        // genuinely need them.
+        if ((options?.headersScope ?? "origin") === "all") {
+          await applyHeaders(headers, session);
+        } else {
+          scopedHeaders = {
+            origin: new URL(baseUrl).origin,
+            json: JSON.stringify(headers),
+          };
+        }
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        // No step/action: nothing step-like failed here, and the message is
+        // self-describing.
+        return {
+          success: false,
+          flowName: flow.name,
+          duration: Date.now() - startTime,
+          error: {
+            message: `Failed to apply headers: ${errorMessage}`,
+            phase: "headers",
+          },
+        };
+      }
+    }
+
+    // Resolve the effective setup: a flow-level setup block replaces the
+    // config/CLI-level one entirely (no merging). An empty array is not
+    // nullish, so an explicit `setup: []` on the flow opts out even when
+    // options.setup is supplied.
+    const setupSteps = flow.setup ?? options?.setup;
+
+    // Execute setup steps (if any) in the same browser session, before the
+    // flow's own steps, so state established during setup (e.g. an auth
+    // cookie) is observed by everything that follows. Read-only iteration —
+    // the setup array may be shared/aliased by the caller and must not be
+    // mutated.
+    if (setupSteps && setupSteps.length > 0) {
+      for (let setupIndex = 0; setupIndex < setupSteps.length; setupIndex++) {
+        const step = setupSteps[setupIndex];
+
+        try {
+          await executeStep(step, baseUrl, session, timeout, scopedHeaders);
+        } catch (error: unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          return {
+            success: false,
+            flowName: flow.name,
+            duration: Date.now() - startTime,
+            error: {
+              message: errorMessage,
+              phase: "setup",
+              step: setupIndex,
+              action: step,
+            },
+          };
+        }
+      }
+    }
+
     // Execute all steps
     for (let stepIndex = 0; stepIndex < flow.steps.length; stepIndex++) {
       const step = flow.steps[stepIndex];
 
       try {
-        await executeStep(step, baseUrl, session, timeout);
+        await executeStep(step, baseUrl, session, timeout, scopedHeaders);
       } catch (error: unknown) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);

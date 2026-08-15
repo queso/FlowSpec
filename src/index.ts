@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig, mergeConfig } from "./config.js";
+import { CONFIG_FILE_NAME, loadConfig, mergeConfig } from "./config.js";
 import { formatInitResult, initProject } from "./init.js";
 import { parseFlowFile } from "./parser.js";
 import { formatResult, formatSummary } from "./reporter.js";
 import { DEFAULT_TIMEOUT, runFlow } from "./runner.js";
-import type { FlowResult, FlowSpec } from "./types.js";
+import type { FlowResult, FlowSpec, FlowStep } from "./types.js";
 
 interface CliOptions {
   path?: string;
   baseUrl?: string;
   timeout?: number;
+  headers?: Record<string, string>;
+  /** First malformed --header argument, if any. */
+  headerError?: string;
   showHelp: boolean;
 }
 
@@ -26,6 +29,9 @@ Commands:
 Run Command Options:
   --base-url <url>  Base URL for relative paths (default from config or http://localhost:3000)
   --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
+  --header "Name: value"
+                    Extra HTTP header to send. Repeatable; overrides the
+                    config headers block entirely
   --help            Show help
 
 Init Command Options:
@@ -39,8 +45,44 @@ Init Command Options:
 Exit codes:
   0  All flows passed
   1  One or more flows failed
-  2  Parse error (invalid YAML/schema)
+  2  Parse error, a malformed --header, or a config file that fails to load
+     or validate (invalid YAML, schema, or an unset \${VAR})
 `);
+}
+
+/**
+ * Parse one `--header "Name: value"` argument.
+ *
+ * Splits at the FIRST colon so a value may contain colons of its own
+ * ("authorization: Bearer a:b"), and trims both halves so the conventional
+ * space after the colon is not part of the value. Returns the parsed pair, or
+ * a one-line error message describing what is wrong with the argument.
+ *
+ * No ${VAR} interpolation happens here, unlike config-file values: the shell
+ * has already had its chance to expand the argument, so a reference that
+ * survived quoting is a literal the user meant to send.
+ */
+function parseHeaderArg(arg: string): { name: string; value: string } | string {
+  const colonIndex = arg.indexOf(":");
+
+  if (colonIndex === -1) {
+    return `Error: invalid --header "${arg}" - expected "Name: value"`;
+  }
+
+  const name = arg.slice(0, colonIndex).trim();
+  if (name === "") {
+    return `Error: invalid --header "${arg}" - the header name is empty`;
+  }
+
+  return { name, value: arg.slice(colonIndex + 1).trim() };
+}
+
+/**
+ * Keep the FIRST header error. Reporting the earliest malformed flag points
+ * the user at the one they can fix without re-running to discover the next.
+ */
+function recordHeaderError(options: CliOptions, message: string): void {
+  options.headerError ??= message;
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -59,6 +101,25 @@ function parseArgs(args: string[]): CliOptions {
       const timeoutValue = Number.parseInt(args[++i], 10);
       if (!Number.isNaN(timeoutValue)) {
         options.timeout = timeoutValue;
+      }
+    } else if (arg === "--header") {
+      const headerArg = args[i + 1];
+      if (headerArg === undefined) {
+        recordHeaderError(
+          options,
+          'Error: --header requires a "Name: value" argument',
+        );
+        continue;
+      }
+      i++;
+
+      const parsed = parseHeaderArg(headerArg);
+      if (typeof parsed === "string") {
+        recordHeaderError(options, parsed);
+      } else {
+        // Later duplicates win, matching how every other repeatable
+        // "last one wins" CLI flag behaves.
+        options.headers = { ...options.headers, [parsed.name]: parsed.value };
       }
     } else if (!arg.startsWith("-") && !options.path) {
       options.path = arg;
@@ -125,14 +186,65 @@ function parseFlowFiles(filePaths: string[]): {
 async function runFlows(
   parsedFlows: ParsedFlow[],
   baseUrl: string,
-  timeout?: number,
+  timeout: number | undefined,
+  configSetup: FlowStep[] | undefined,
+  configHeaders: Record<string, string> | undefined,
+  configHeadersScope: "origin" | "all" | undefined,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
-  for (const { flow } of parsedFlows) {
-    const result = await runFlow(flow, { baseUrl, timeout });
+  for (let i = 0; i < parsedFlows.length; i++) {
+    const { flow } = parsedFlows[i];
+    const result = await runFlow(flow, {
+      baseUrl,
+      timeout,
+      setup: configSetup,
+      headers: configHeaders,
+      headersScope: configHeadersScope,
+    });
     console.log(formatResult(result));
     results.push(result);
+
+    // A setup failure "came from config" exactly when this flow declared no
+    // setup of its own (an explicit empty list means the flow opted out and
+    // cannot have failed in setup at all). A shared setup failing means
+    // every remaining flow would fail the same way, so stop the run and
+    // report the rest as skipped rather than repeating the same error.
+    const failedSetupFromConfig =
+      !result.success &&
+      result.error?.phase === "setup" &&
+      flow.setup === undefined;
+
+    // Headers are config-only — a flow cannot declare its own — so a
+    // headers-phase failure is always shared and every remaining flow would
+    // fail applying the same headers.
+    const failedHeadersFromConfig =
+      !result.success && result.error?.phase === "headers";
+
+    if (failedSetupFromConfig || failedHeadersFromConfig) {
+      // Say why the run stopped, and name the part of the config that
+      // actually failed — pointing at `setup:` for a headers failure would
+      // send the user debugging a block that is fine (or absent).
+      if (i + 1 < parsedFlows.length) {
+        console.log(
+          failedHeadersFromConfig
+            ? `Aborting run: applying the shared headers from ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`
+            : `Aborting run: the shared setup in ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`,
+        );
+      }
+
+      for (let j = i + 1; j < parsedFlows.length; j++) {
+        const skippedResult: FlowResult = {
+          success: false,
+          flowName: parsedFlows[j].flow.name,
+          duration: 0,
+          skipped: true,
+        };
+        console.log(formatResult(skippedResult));
+        results.push(skippedResult);
+      }
+      break;
+    }
   }
 
   return results;
@@ -181,6 +293,14 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(0);
   }
 
+  // A malformed --header is a misconfiguration, not a flow failure: exit 2
+  // before any flow parses and before any browser session opens, exactly as
+  // an invalid config file does.
+  if (options.headerError) {
+    console.error(options.headerError);
+    process.exit(2);
+  }
+
   if (!options.path) {
     console.error("Error: No path specified");
     showHelp();
@@ -194,12 +314,22 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Load configuration and merge with CLI options
-  const config = loadConfig();
-  const mergedConfig = mergeConfig(config, {
-    baseUrl: options.baseUrl,
-    timeout: options.timeout,
-  });
+  // Load configuration and merge with CLI options. A misconfigured project
+  // (bad YAML, failed schema validation, an unresolved ${VAR}) must fail
+  // fast with exit code 2 — before any flow is parsed and before any
+  // browser session opens — matching the existing parse-error contract.
+  let mergedConfig: ReturnType<typeof mergeConfig>;
+  try {
+    const config = loadConfig();
+    mergedConfig = mergeConfig(config, {
+      baseUrl: options.baseUrl,
+      timeout: options.timeout,
+      headers: options.headers,
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(2);
+  }
 
   const flowFiles = discoverFlowFiles(options.path);
 
@@ -225,6 +355,9 @@ async function handleRunCommand(args: string[]): Promise<void> {
     flows,
     mergedConfig.baseUrl,
     mergedConfig.timeout,
+    mergedConfig.setup,
+    mergedConfig.headers,
+    mergedConfig.headersScope,
   );
 
   // Print summary

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup Auth</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 400px;
+      margin: 2rem auto;
+      padding: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1 id="status">Setting up session...</h1>
+  <script>
+    // Plant a session cookie for later pages on this origin to observe.
+    // This is the ONLY place this cookie is ever set - session-check.html
+    // only reads it. A correct runner must execute this page and
+    // session-check.html in the SAME browser session for the cookie to
+    // be visible there. An implementation that opens a second session
+    // for setup will make session-check.html render "Not authenticated".
+    // biome-ignore lint/suspicious/noDocumentCookie: this fixture must set a real cookie — it is the mechanism that proves setup and steps share one browser session
+    document.cookie = "flowspec_session=granted; path=/";
+    document.getElementById("status").textContent = "Session established";
+  </script>
+</body>
+</html>

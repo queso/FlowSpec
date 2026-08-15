@@ -66,6 +66,7 @@ export type FlowStep = z.infer<typeof FlowStepSchema>;
 export const FlowSpecSchema = z.object({
   name: z.string(),
   description: z.string(),
+  setup: z.array(FlowStepSchema).optional(),
   steps: z.array(FlowStepSchema).min(1),
   expect: z.array(StepAssertionSchema).min(1),
 });
@@ -75,9 +76,15 @@ export type FlowSpec = z.infer<typeof FlowSpecSchema>;
 /**
  * Schema for flow execution errors
  * Can describe either a step failure or an assertion failure
+ *
+ * `phase` marks a failure that happened outside the flow's own steps:
+ * - "setup" - a shared setup step failed
+ * - "headers" - applying config-level HTTP headers to the browser session
+ *   failed, before any step ran (so no step/action accompanies it)
  */
 export const FlowErrorSchema = z.object({
   message: z.string(),
+  phase: z.enum(["setup", "headers"]).optional(),
   step: z.number().optional(),
   action: StepActionSchema.optional(),
   assertion: StepAssertionSchema.optional(),
@@ -90,11 +97,18 @@ export type FlowError = z.infer<typeof FlowErrorSchema>;
  * Schema for flow execution results
  * Contains success status, timing, and optional error details
  */
-export const FlowResultSchema = z.object({
-  success: z.boolean(),
-  flowName: z.string(),
-  duration: z.number(),
-  error: FlowErrorSchema.optional(),
-});
+export const FlowResultSchema = z
+  .object({
+    success: z.boolean(),
+    flowName: z.string(),
+    duration: z.number(),
+    error: FlowErrorSchema.optional(),
+    skipped: z.boolean().optional(),
+  })
+  .refine((result) => !(result.success && result.skipped === true), {
+    message:
+      "a skipped flow cannot be successful (success: true, skipped: true is contradictory)",
+    path: ["skipped"],
+  });
 
 export type FlowResult = z.infer<typeof FlowResultSchema>;

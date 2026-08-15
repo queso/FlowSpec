@@ -3,6 +3,7 @@ import type { FlowError, FlowResult, StepAction } from "./types.js";
 // ANSI color codes
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
+const YELLOW = "\x1b[33m";
 const RESET = "\x1b[0m";
 
 /**
@@ -44,7 +45,8 @@ export function formatError(error: FlowError): string {
   const parts: string[] = [];
 
   if (error.step !== undefined && error.action) {
-    parts.push(`Step ${error.step}: ${formatAction(error.action)}`);
+    const stepLabel = error.phase === "setup" ? "Setup step" : "Step";
+    parts.push(`${stepLabel} ${error.step}: ${formatAction(error.action)}`);
   }
 
   parts.push(`Error: ${error.message}`);
@@ -59,6 +61,10 @@ export function formatError(error: FlowError): string {
  * @returns Formatted result string with ANSI colors
  */
 export function formatResult(result: FlowResult): string {
+  if (result.skipped) {
+    return `${YELLOW}○ ${result.flowName} (skipped)${RESET}`;
+  }
+
   const duration = formatDuration(result.duration);
 
   if (result.success) {
@@ -70,8 +76,9 @@ export function formatResult(result: FlowResult): string {
 
   if (result.error) {
     if (result.error.step !== undefined && result.error.action) {
+      const stepLabel = result.error.phase === "setup" ? "Setup step" : "Step";
       lines.push(
-        `  Step ${result.error.step}: ${formatAction(result.error.action)}`,
+        `  ${stepLabel} ${result.error.step}: ${formatAction(result.error.action)}`,
       );
     }
     lines.push(`  Error: ${result.error.message}`);
@@ -88,10 +95,15 @@ export function formatResult(result: FlowResult): string {
  */
 export function formatSummary(results: FlowResult[]): string {
   const total = results.length;
-  const passed = results.filter((r) => r.success).length;
-  const failed = total - passed;
+  // Bucket by construction rather than by subtraction: a malformed result
+  // (success: true alongside skipped: true) is schema-legal, and deriving
+  // failed as total - passed - skipped would double-count it into a negative.
+  const skipped = results.filter((r) => r.skipped === true).length;
+  const passed = results.filter((r) => r.success && r.skipped !== true).length;
+  const failed = results.filter((r) => !r.success && r.skipped !== true).length;
 
   const flowWord = total === 1 ? "flow" : "flows";
+  const skippedClause = skipped > 0 ? `, ${skipped} skipped` : "";
 
-  return `${total} ${flowWord}: ${passed} passed, ${failed} failed`;
+  return `${total} ${flowWord}: ${passed} passed, ${failed} failed${skippedClause}`;
 }

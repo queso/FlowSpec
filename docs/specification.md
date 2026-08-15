@@ -80,6 +80,15 @@ This context helps agents understand what business goal they're preserving when 
 name: string                    # Identifier for the flow
 description: string             # Business context and intent
 
+setup:                          # Optional: steps to run once, in the same
+                                 # browser session, before `steps` (e.g.
+                                 # planting an auth session). Same grammar as
+                                 # `steps`. A flow-level `setup` replaces any
+                                 # config-level `setup` entirely; `setup: []`
+                                 # opts the flow out of setup altogether.
+  - visit: "/setup-path"        # Relative paths resolve against baseUrl's
+                                 # origin and path only — see the note below.
+
 steps:                          # Ordered user actions
   - visit: "/path"              # Navigate to URL
   - click: "Button Text"        # Click element by visible text
@@ -95,6 +104,13 @@ expect:                         # Assertions after steps complete
   - matches: "regex pattern"    # Text matching pattern is visible
   - not_visible: "Text"         # Text is not visible
 ```
+
+A relative `visit:` path is resolved against `baseUrl`'s origin and path only — a
+query string on `baseUrl` is **not** carried over. A setup step that must land on a
+URL carrying a token query param (`https://preview.example.dev?_ab=TOKEN`) has to
+spell that URL out absolutely; writing `visit: "/"` against that `baseUrl` navigates
+to `https://preview.example.dev/` with the token stripped, and whatever session the
+token would have planted is never established.
 
 ### Full Example
 
@@ -118,6 +134,65 @@ expect:
   - visible: "Welcome, newuser@example.com"
   - visible: "Complete your profile"
 ```
+
+## Configuration File
+
+Project-level settings live in `flowspec.config.yaml`, discovered by walking up from
+the current directory. CLI options override file values.
+
+```yaml
+baseUrl: string                 # Origin every relative `visit:` resolves against
+timeout: number                 # Assertion retry timeout, in milliseconds
+specsDir: string                # Directory flows are loaded from
+
+setup:                          # Optional: steps run once per flow, in that flow's
+                                 # own browser session, before its `steps`. Shared by
+                                 # every flow; a flow-level `setup` replaces it, and
+                                 # `setup: []` on a flow opts out. Same grammar as a
+                                 # flow's `steps`.
+  - visit: "https://preview.example.dev?_ab=${PREVIEW_TOKEN}"
+
+headers:                        # Optional: HTTP headers applied to each flow's
+                                 # browser session before `setup` and `steps` run, so
+                                 # every request to `baseUrl`'s origin carries them.
+                                 # For deployments gated on a request header rather
+                                 # than a URL or login form.
+  x-vercel-protection-bypass: "${BYPASS_TOKEN}"
+
+headersScope: "origin" | "all"  # Optional: how far `headers` travel. Default
+                                 # "origin" — only requests to `baseUrl`'s origin
+                                 # carry them. "all" sends them context-wide, on
+                                 # every request to every origin.
+```
+
+`headers` is config-level only — there is no `headers` block in a flow file. Header
+auth describes the environment a flow runs against, not the behavior the flow asserts,
+so it stays out of the immutable `specs/**` surface (see `adr/0003`). The repeatable
+CLI flag `--header "Name: value"` replaces the `headers` block outright rather than
+merging into it; `headersScope` has no CLI equivalent.
+
+Headers are origin-scoped by default: they attach to requests to `baseUrl`'s origin —
+same-origin subresources included — and to nothing else, so a bypass token is never
+sent to a CDN, an analytics pixel, or an absolute `visit:` to another origin. Matching
+is by host and ignores scheme. `headersScope: all` is the opt-out, restoring
+context-wide headers for flows that legitimately span origins.
+
+Header names and values are validated before any browser command runs: a name that is
+not a valid HTTP token, or a value containing NUL, carriage return, or line feed, fails
+with the `Failed to apply headers: ...` error below, naming the offending header.
+
+String values in this file support `${VAR_NAME}` references, resolved from
+`process.env` at load time; a referenced variable that isn't set is a hard error naming
+the variable and the config file path, raised before any flow is parsed or any browser
+session opens. Only *values* are interpolated — keys are never touched, so a header
+name containing `${...}` is left as written. Interpolation never runs on flow spec
+files under `specs/`, nor on CLI arguments — a `--header` value is sent as the shell
+delivered it.
+
+A failure applying `headers` aborts the run, since the headers are shared by every
+flow: the flow being run is reported as failed with a `Failed to apply headers: ...`
+error and every remaining flow is reported as skipped — the same contract as a
+config-level `setup` failure.
 
 ## Execution Modes
 
