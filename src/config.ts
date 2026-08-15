@@ -17,6 +17,12 @@ export const FlowSpecConfigSchema = z.object({
   // Deliberately absent from FlowSpecSchema — auth/environment concerns
   // stay in config, out of the committed flow specs (see adr/0003).
   headers: z.record(z.string()).optional(),
+  // How far those headers travel. Only meaningful alongside `headers`.
+  // Absent means the runner's default, "origin": headers go to baseUrl's
+  // origin only, so a bypass token is never handed to a CDN, an analytics
+  // pixel, or any other third party the page happens to request. "all" is
+  // the explicit opt-out for deployments that need them context-wide.
+  headersScope: z.enum(["origin", "all"]).optional(),
 });
 
 export type FlowSpecConfig = z.infer<typeof FlowSpecConfigSchema>;
@@ -183,13 +189,22 @@ export function loadConfig(startDir: string = process.cwd()): FlowSpecConfig {
  */
 export function mergeConfig(
   config: FlowSpecConfig,
-  cliOptions: { baseUrl?: string; timeout?: number },
+  cliOptions: {
+    baseUrl?: string;
+    timeout?: number;
+    headers?: Record<string, string>;
+  },
 ): FlowSpecConfig {
   return {
     baseUrl: cliOptions.baseUrl ?? config.baseUrl,
     timeout: cliOptions.timeout ?? config.timeout,
     specsDir: config.specsDir,
     setup: config.setup,
-    headers: config.headers,
+    // CLI --header flags REPLACE the config headers block outright — they are
+    // not merged key by key. Same replacement-over-merge rule a flow-level
+    // setup block follows: a partial override would leave the user guessing
+    // which of the two sources supplied any given header.
+    headers: cliOptions.headers ?? config.headers,
+    headersScope: config.headersScope,
   };
 }

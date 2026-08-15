@@ -92,6 +92,9 @@ flowspec run specs/ --timeout 10000
 # Disable assertion retries (fail immediately)
 flowspec run specs/ --timeout 0
 
+# Send an extra HTTP header (repeatable)
+flowspec run specs/ --header "x-vercel-protection-bypass: $BYPASS_TOKEN"
+
 # Show help
 flowspec --help
 ```
@@ -145,9 +148,28 @@ headers:
   x-vercel-protection-bypass: ${BYPASS_TOKEN}
 ```
 
-Every request the session makes carries these headers — setup steps and flow steps alike — so no flow needs its own auth handling. The same shape works for a Netlify preview password header or an `Authorization` header on an API-gated environment.
+Every request the session makes to that deployment carries these headers — setup steps and flow steps alike — so no flow needs its own auth handling. The same shape works for a Netlify preview password header or an `Authorization` header on an API-gated environment.
 
 Header **values** support [`${VAR}` interpolation](#var-interpolation), which is how the token stays out of the committed config file. Header **names** are never interpolated — a `${...}` in a header name is left alone.
+
+**Scope: `baseUrl`'s origin by default.** Headers attach only to requests to `baseUrl`'s origin. Same-origin subresources are included; cross-origin requests are not — a CDN, an analytics pixel, or an absolute `visit:` to another origin gets no headers at all, so the token never leaks to a third party. Scoping is by host and ignores scheme, an artifact of how the underlying browser layer registers the interception.
+
+Set `headersScope: all` to opt out and go back to context-wide headers — every request, all origins — for flows that legitimately span origins and need the headers on each:
+
+```yaml
+# flowspec.config.yaml
+headersScope: all   # opt out of origin scoping: every request, all origins
+```
+
+**On the command line.** `flowspec run` accepts a repeatable `--header "Name: value"` flag, so CI can pass the token on the invocation instead of requiring the variable the config interpolates:
+
+```bash
+flowspec run specs/ --base-url https://myapp-preview.vercel.app --header "x-vercel-protection-bypass: $TOKEN"
+```
+
+`--header` flags **replace** the config `headers` block entirely rather than merging into it key by key — the same replacement rule a flow-level `setup` follows. Values are not `${VAR}`-interpolated: the shell has already had its chance to expand the argument, so a reference that survived quoting is sent literally. A later `--header` for a name given earlier wins. A malformed argument (no colon, or an empty name) is a one-line error and exit code 2, reported before any flow is parsed or any browser session opens. `headersScope` remains config-only.
+
+**Validation.** FlowSpec checks header names and values itself before issuing any browser command: a name that isn't a valid HTTP token, or a value containing NUL, carriage return, or line feed, fails with the standard `Failed to apply headers: ...` error naming the offending header. The check is not redundant — under origin scoping the browser layer hangs on a bad name rather than reporting an error, and a hung flow tells the user nothing.
 
 `headers` is config-level only; there is no `headers` block in a flow file. Header auth is a property of the environment you're pointing at, not of the behavior your app is supposed to have, so it belongs next to the `baseUrl` it goes with rather than inside the specs — the same reasoning that keeps specs immutable and human-readable (see [ADR 0003](adr/0003-config-stays-committed-var-is-the-boundary.md)).
 
@@ -165,7 +187,7 @@ baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
 
 This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file. Bun loads `.env` automatically; under Node pass `--env-file=.env` (Node 20.6+) or preload dotenv. FlowSpec itself never reads `.env` files. If you use a `.env` file, make sure it is listed in your project's `.gitignore` — moving the token out of `flowspec.config.yaml` and into a committed `.env` defeats the purpose.
 
-- Interpolation applies to config file string *values* only — never to keys, so a header name under `headers` is never substituted. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted.
+- Interpolation applies to config file string *values* only — never to keys, so a header name under `headers` is never substituted. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted. It also never runs on CLI arguments, including `--header` values — the shell expands those.
 - A referenced variable that isn't set in `process.env` is a hard error: FlowSpec exits with code 2 and prints a message naming the missing variable and the config file path, before parsing any flow file or opening any browser session.
 
 ### Exit Codes
@@ -174,7 +196,7 @@ This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN`
 | ---- | ------- |
 | 0 | All flows passed |
 | 1 | One or more flows failed |
-| 2 | Parse error, or a config file that fails to load or validate (invalid YAML, schema, or an unset `${VAR}`) |
+| 2 | Parse error, a malformed `--header`, or a config file that fails to load or validate (invalid YAML, schema, or an unset `${VAR}`) |
 
 ## Flow File Format
 

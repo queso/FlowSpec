@@ -12,6 +12,9 @@ interface CliOptions {
   path?: string;
   baseUrl?: string;
   timeout?: number;
+  headers?: Record<string, string>;
+  /** First malformed --header argument, if any. */
+  headerError?: string;
   showHelp: boolean;
 }
 
@@ -26,6 +29,9 @@ Commands:
 Run Command Options:
   --base-url <url>  Base URL for relative paths (default from config or http://localhost:3000)
   --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
+  --header "Name: value"
+                    Extra HTTP header to send. Repeatable; overrides the
+                    config headers block entirely
   --help            Show help
 
 Init Command Options:
@@ -39,9 +45,44 @@ Init Command Options:
 Exit codes:
   0  All flows passed
   1  One or more flows failed
-  2  Parse error, or a config file that fails to load or validate
-     (invalid YAML, schema, or an unset \${VAR})
+  2  Parse error, a malformed --header, or a config file that fails to load
+     or validate (invalid YAML, schema, or an unset \${VAR})
 `);
+}
+
+/**
+ * Parse one `--header "Name: value"` argument.
+ *
+ * Splits at the FIRST colon so a value may contain colons of its own
+ * ("authorization: Bearer a:b"), and trims both halves so the conventional
+ * space after the colon is not part of the value. Returns the parsed pair, or
+ * a one-line error message describing what is wrong with the argument.
+ *
+ * No ${VAR} interpolation happens here, unlike config-file values: the shell
+ * has already had its chance to expand the argument, so a reference that
+ * survived quoting is a literal the user meant to send.
+ */
+function parseHeaderArg(arg: string): { name: string; value: string } | string {
+  const colonIndex = arg.indexOf(":");
+
+  if (colonIndex === -1) {
+    return `Error: invalid --header "${arg}" - expected "Name: value"`;
+  }
+
+  const name = arg.slice(0, colonIndex).trim();
+  if (name === "") {
+    return `Error: invalid --header "${arg}" - the header name is empty`;
+  }
+
+  return { name, value: arg.slice(colonIndex + 1).trim() };
+}
+
+/**
+ * Keep the FIRST header error. Reporting the earliest malformed flag points
+ * the user at the one they can fix without re-running to discover the next.
+ */
+function recordHeaderError(options: CliOptions, message: string): void {
+  options.headerError ??= message;
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -60,6 +101,25 @@ function parseArgs(args: string[]): CliOptions {
       const timeoutValue = Number.parseInt(args[++i], 10);
       if (!Number.isNaN(timeoutValue)) {
         options.timeout = timeoutValue;
+      }
+    } else if (arg === "--header") {
+      const headerArg = args[i + 1];
+      if (headerArg === undefined) {
+        recordHeaderError(
+          options,
+          'Error: --header requires a "Name: value" argument',
+        );
+        continue;
+      }
+      i++;
+
+      const parsed = parseHeaderArg(headerArg);
+      if (typeof parsed === "string") {
+        recordHeaderError(options, parsed);
+      } else {
+        // Later duplicates win, matching how every other repeatable
+        // "last one wins" CLI flag behaves.
+        options.headers = { ...options.headers, [parsed.name]: parsed.value };
       }
     } else if (!arg.startsWith("-") && !options.path) {
       options.path = arg;
@@ -129,6 +189,7 @@ async function runFlows(
   timeout: number | undefined,
   configSetup: FlowStep[] | undefined,
   configHeaders: Record<string, string> | undefined,
+  configHeadersScope: "origin" | "all" | undefined,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
@@ -139,6 +200,7 @@ async function runFlows(
       timeout,
       setup: configSetup,
       headers: configHeaders,
+      headersScope: configHeadersScope,
     });
     console.log(formatResult(result));
     results.push(result);
@@ -231,6 +293,14 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(0);
   }
 
+  // A malformed --header is a misconfiguration, not a flow failure: exit 2
+  // before any flow parses and before any browser session opens, exactly as
+  // an invalid config file does.
+  if (options.headerError) {
+    console.error(options.headerError);
+    process.exit(2);
+  }
+
   if (!options.path) {
     console.error("Error: No path specified");
     showHelp();
@@ -254,6 +324,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
     mergedConfig = mergeConfig(config, {
       baseUrl: options.baseUrl,
       timeout: options.timeout,
+      headers: options.headers,
     });
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
@@ -286,6 +357,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
     mergedConfig.timeout,
     mergedConfig.setup,
     mergedConfig.headers,
+    mergedConfig.headersScope,
   );
 
   // Print summary

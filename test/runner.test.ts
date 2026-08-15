@@ -156,6 +156,138 @@ describeIfAgentBrowser("Flow Runner", () => {
     });
   });
 
+  describe("values containing quotes and shell metacharacters", () => {
+    /**
+     * Nothing the runner does goes through a shell: agent-browser is spawned
+     * with an argv array. These tests pin that contract from the outside —
+     * a value the user wrote must arrive at the page byte-for-byte, however
+     * many quotes, spaces, or shell-looking characters it contains.
+     *
+     * The anti-fake property: agent-browser's snapshot renders a textbox's
+     * *current value*, so `visible` on that exact string can only pass if the
+     * browser really typed those bytes. No mocks, no command-string spying.
+     */
+
+    it("fills a value containing a single quote verbatim", async () => {
+      const flow: FlowSpec = {
+        name: "fill-single-quote",
+        description: "An apostrophe must survive the trip to the page",
+        steps: [{ visit: "/forms.html" }, { fill: { Name: "it's here" } }],
+        expect: [{ visible: "it's here" }],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("does not leave POSIX quote-escaping artifacts in the filled value", async () => {
+      const flow: FlowSpec = {
+        name: "fill-no-escaping-artifacts",
+        description:
+          "The '\\'' shell-escaping idiom must never reach the input value",
+        steps: [{ visit: "/forms.html" }, { fill: { Name: "it's here" } }],
+        expect: [{ not_visible: `it'"'"'s here` }],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("fills a value containing double quotes and spaces verbatim", async () => {
+      const flow: FlowSpec = {
+        name: "fill-double-quotes",
+        description: "Double quotes and spaces survive (regression)",
+        steps: [
+          { visit: "/forms.html" },
+          { fill: { Message: 'He said "hello there" twice' } },
+        ],
+        expect: [{ visible: 'He said "hello there" twice' }],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("treats shell metacharacters as literal text, never as commands", async () => {
+      const flow: FlowSpec = {
+        name: "fill-shell-metacharacters",
+        description:
+          "Injection-shaped input lands in the field as plain characters",
+        steps: [
+          { visit: "/forms.html" },
+          { fill: { Name: "$(whoami) `id` ; rm -rf" } },
+        ],
+        expect: [{ visible: "$(whoami) `id` ; rm -rf" }],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("fills several quote-bearing fields in one step", async () => {
+      const flow: FlowSpec = {
+        name: "fill-multiple-quoted",
+        description: "Each field keeps its own quoting",
+        steps: [
+          { visit: "/forms.html" },
+          {
+            fill: {
+              Name: "O'Brien",
+              Message: "don't \"panic\" — it's fine",
+            },
+          },
+        ],
+        expect: [
+          { visible: "O'Brien" },
+          { visible: "don't \"panic\" — it's fine" },
+        ],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("visits an absolute URL whose query contains a quote and a space", async () => {
+      // An absolute URL is passed through untouched by the runner (no
+      // URL-normalization pass), so the apostrophe reaches the browser
+      // as-is. The browser then percent-encodes it, which is what the URL
+      // assertion below pins.
+      const flow: FlowSpec = {
+        name: "visit-quoted-url",
+        description: "Query values with quotes are not mangled",
+        steps: [{ visit: `${server.baseUrl}/forms.html?note=it's here` }],
+        expect: [{ url: "note=it%27s%20here" }, { visible: "Contact Form" }],
+      };
+
+      const result = await runFlow(flow, {
+        baseUrl: server.baseUrl,
+        timeout: 0,
+      });
+
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("select step", () => {
     it("should select dropdown option by text", async () => {
       const flow: FlowSpec = {

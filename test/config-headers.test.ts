@@ -322,6 +322,139 @@ describe("mergeConfig headers pass-through", () => {
   });
 });
 
+describe("FlowSpecConfigSchema headersScope field", () => {
+  it.each(["origin", "all"])("loads the valid scope %o", (scope) => {
+    const configPath = writeConfig(
+      `headers:
+  ${BYPASS_HEADER}: abc123
+headersScope: ${scope}
+`,
+    );
+
+    const config = loadConfigFile(configPath);
+
+    expect(config.headersScope).toBe(scope);
+  });
+
+  it("leaves headersScope undefined when absent, so the runner's safe default applies", () => {
+    const configPath = writeConfig(
+      `headers:
+  ${BYPASS_HEADER}: abc123
+`,
+    );
+
+    const config = loadConfigFile(configPath);
+
+    expect(config.headersScope).toBeUndefined();
+  });
+
+  it.each([
+    "ORIGIN",
+    "Origin",
+    "everywhere",
+    "origin ",
+    "",
+    "true",
+  ])("rejects the invalid scope %o, naming the headersScope path", (scope) => {
+    const configPath = writeConfig(
+      `headers:
+  ${BYPASS_HEADER}: abc123
+headersScope: "${scope}"
+`,
+    );
+
+    expect(() => loadConfigFile(configPath)).toThrow(/invalid configuration/i);
+    try {
+      loadConfigFile(configPath);
+      throw new Error("expected loadConfigFile to throw");
+    } catch (error) {
+      expect((error as Error).message).toMatch(/headersScope/);
+    }
+  });
+});
+
+describe("mergeConfig headersScope pass-through", () => {
+  const baseConfig = {
+    baseUrl: "http://config.com",
+    timeout: 5000,
+    specsDir: "specs/",
+  };
+
+  it("carries an explicit headersScope through unchanged", () => {
+    const merged = mergeConfig(
+      {
+        ...baseConfig,
+        headers: { [BYPASS_HEADER]: "abc" },
+        headersScope: "all" as const,
+      },
+      { baseUrl: "http://cli.com" },
+    );
+
+    expect(merged.headersScope).toBe("all");
+  });
+
+  it("does not fabricate a headersScope when the config omits it", () => {
+    const merged = mergeConfig({ ...baseConfig }, {});
+
+    expect(merged.headersScope).toBeUndefined();
+  });
+});
+
+describe("mergeConfig CLI headers precedence", () => {
+  const configWithHeaders = {
+    baseUrl: "http://config.com",
+    timeout: 5000,
+    specsDir: "specs/",
+    headers: { [BYPASS_HEADER]: "from-config", "x-config-only": "kept" },
+  };
+
+  it("replaces the config headers block entirely rather than merging per key", () => {
+    const merged = mergeConfig(configWithHeaders, {
+      headers: { authorization: "from-cli" },
+    });
+
+    // Replacement, not merge: no config key survives alongside the CLI one.
+    // This mirrors how a flow-level setup block replaces the config one.
+    expect(merged.headers).toEqual({ authorization: "from-cli" });
+    expect(merged.headers).not.toHaveProperty("x-config-only");
+  });
+
+  it("wins for a header name the config also sets", () => {
+    const merged = mergeConfig(configWithHeaders, {
+      headers: { [BYPASS_HEADER]: "from-cli" },
+    });
+
+    expect(merged.headers?.[BYPASS_HEADER]).toBe("from-cli");
+  });
+
+  it("falls back to the config headers when the CLI supplies none", () => {
+    const merged = mergeConfig(configWithHeaders, {
+      baseUrl: "http://cli.com",
+    });
+
+    expect(merged.headers).toEqual(configWithHeaders.headers);
+  });
+
+  it("supplies CLI headers even when the config has no headers block at all", () => {
+    const merged = mergeConfig(
+      { baseUrl: "http://config.com", timeout: 5000, specsDir: "specs/" },
+      { headers: { authorization: "from-cli" } },
+    );
+
+    expect(merged.headers).toEqual({ authorization: "from-cli" });
+  });
+
+  it("leaves the other merged fields untouched", () => {
+    const merged = mergeConfig(configWithHeaders, {
+      headers: { authorization: "from-cli" },
+    });
+
+    expect(merged.baseUrl).toBe("http://config.com");
+    expect(merged.timeout).toBe(5000);
+    expect(merged.specsDir).toBe("specs/");
+  });
+});
+
 describe("DEFAULT_CONFIG and empty-config-file path stay headers-free", () => {
   it("DEFAULT_CONFIG has no headers field", () => {
     expect(DEFAULT_CONFIG.headers).toBeUndefined();

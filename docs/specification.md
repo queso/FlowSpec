@@ -154,22 +154,40 @@ setup:                          # Optional: steps run once per flow, in that flo
 
 headers:                        # Optional: HTTP headers applied to each flow's
                                  # browser session before `setup` and `steps` run, so
-                                 # every request the session makes carries them. For
-                                 # deployments gated on a request header rather than a
-                                 # URL or login form.
+                                 # every request to `baseUrl`'s origin carries them.
+                                 # For deployments gated on a request header rather
+                                 # than a URL or login form.
   x-vercel-protection-bypass: "${BYPASS_TOKEN}"
+
+headersScope: "origin" | "all"  # Optional: how far `headers` travel. Default
+                                 # "origin" — only requests to `baseUrl`'s origin
+                                 # carry them. "all" sends them context-wide, on
+                                 # every request to every origin.
 ```
 
 `headers` is config-level only — there is no `headers` block in a flow file. Header
 auth describes the environment a flow runs against, not the behavior the flow asserts,
-so it stays out of the immutable `specs/**` surface (see `adr/0003`).
+so it stays out of the immutable `specs/**` surface (see `adr/0003`). The repeatable
+CLI flag `--header "Name: value"` replaces the `headers` block outright rather than
+merging into it; `headersScope` has no CLI equivalent.
+
+Headers are origin-scoped by default: they attach to requests to `baseUrl`'s origin —
+same-origin subresources included — and to nothing else, so a bypass token is never
+sent to a CDN, an analytics pixel, or an absolute `visit:` to another origin. Matching
+is by host and ignores scheme. `headersScope: all` is the opt-out, restoring
+context-wide headers for flows that legitimately span origins.
+
+Header names and values are validated before any browser command runs: a name that is
+not a valid HTTP token, or a value containing NUL, carriage return, or line feed, fails
+with the `Failed to apply headers: ...` error below, naming the offending header.
 
 String values in this file support `${VAR_NAME}` references, resolved from
 `process.env` at load time; a referenced variable that isn't set is a hard error naming
 the variable and the config file path, raised before any flow is parsed or any browser
 session opens. Only *values* are interpolated — keys are never touched, so a header
 name containing `${...}` is left as written. Interpolation never runs on flow spec
-files under `specs/`.
+files under `specs/`, nor on CLI arguments — a `--header` value is sent as the shell
+delivered it.
 
 A failure applying `headers` aborts the run, since the headers are shared by every
 flow: the flow being run is reported as failed with a `Failed to apply headers: ...`

@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Config-level HTTP headers**: `flowspec.config.yaml` accepts an optional `headers` map, applied to each flow's browser session before that flow's `setup` and `steps` run, so every request the session makes carries them. This is the way past a deployment gated on a request header rather than a URL or login form (a Vercel protection-bypass token, a Netlify preview header, an `Authorization` header), and it composes with `setup` for navigation-based auth.
   - Header **values** support `${VAR}` interpolation, keeping the token out of the committed config; header **names** are never interpolated, since interpolation walks string values and never object keys. An unset variable is the same hard error as anywhere else in the config, naming the variable and the config file path before any browser session opens.
+  - Headers are **origin-scoped by default**: they attach only to requests to `baseUrl`'s origin (same-origin subresources included) and never to cross-origin requests — a CDN, an analytics pixel, or an absolute `visit:` to another origin — so a bypass token is not handed to third parties. The new optional `headersScope: all` in `flowspec.config.yaml` is the opt-in escape hatch, restoring context-wide headers on every request to every origin for flows that legitimately span origins. Scoping matches by host and ignores scheme, following the underlying browser layer.
+  - Repeatable **`--header "Name: value"` CLI flag** on `flowspec run`, so CI can pass the token on the invocation (alongside `--base-url`) instead of requiring the environment variable the config interpolates. The flags **replace** the config `headers` block entirely rather than merging per key — the same replacement rule a flow-level `setup` follows. Values are not `${VAR}`-interpolated, since the shell has already expanded them. A later flag for a name given earlier wins. A malformed argument (missing colon, or an empty name) prints a one-line error and exits with code **2**, before any flow is parsed or any browser session opens. `headersScope` has no CLI equivalent.
+  - **Header validation up front**: header names that are not valid HTTP tokens, and values containing NUL, carriage return, or line feed, are rejected by FlowSpec itself before any browser command is issued, reported as the standard `Failed to apply headers: ...` failure naming the offending header. Necessary rather than defensive: under origin scoping, the browser layer hangs on a bad header name instead of erroring.
   - `headers` is config-level only — there is no flow-file `headers` block. Header auth is an environment concern rather than app behavior, so it stays out of the immutable `specs/**` surface (`adr/0003`).
   - Because the headers are shared by every flow, a failure applying them aborts the run: that flow fails with a `Failed to apply headers: ...` error and every remaining flow is reported as skipped — the same contract as a config-level `setup` failure.
 
@@ -47,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Config files that fail to load or validate — including an unset `${VAR}` reference — now consistently exit with code **2** and print the underlying message without an `"Unexpected error:"` prefix, before any flow is parsed or browser session opened. Exit code **1** continues to mean flows ran and at least one failed; **0** means all flows passed. This is now documented explicitly in the README's exit code table.
+
+### Fixed
+
+- **Quote fidelity in browser commands**: every `agent-browser` invocation now passes an argument array straight to the process instead of building a shell command string, so no shell is involved and the hand-rolled quoting is gone. Values containing quotes — header values, `fill` text, URLs — round-trip verbatim instead of arriving with escaping artifacts.
 
 ### Documentation
 
