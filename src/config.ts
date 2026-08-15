@@ -12,6 +12,11 @@ export const FlowSpecConfigSchema = z.object({
   timeout: z.number().positive().optional().default(10000),
   specsDir: z.string().optional().default("specs/"),
   setup: z.array(FlowStepSchema).optional(),
+  // Config-level only: HTTP headers applied to the browser session for
+  // header-protected deployments (e.g. a Vercel/Netlify bypass token).
+  // Deliberately absent from FlowSpecSchema — auth/environment concerns
+  // stay in config, out of the committed flow specs (see adr/0003).
+  headers: z.record(z.string()).optional(),
 });
 
 export type FlowSpecConfig = z.infer<typeof FlowSpecConfigSchema>;
@@ -185,5 +190,6 @@ export function mergeConfig(
     timeout: cliOptions.timeout ?? config.timeout,
     specsDir: config.specsDir,
     setup: config.setup,
+    headers: config.headers,
   };
 }

@@ -132,9 +132,32 @@ Visiting the token URL plants a session cookie, so every flow that follows runs 
 
 **Failure behavior:** if a shared (config-level) `setup` step fails, the run aborts immediately — that flow is reported as failed with a `Setup step N:` error, and every remaining flow is reported as skipped, since a broken shared setup means every subsequent flow would fail the same way. If a flow-level `setup` step fails, only that one flow fails; the run continues normally with the remaining flows.
 
+#### Headers: Header-Based Auth
+
+A `headers` map in `flowspec.config.yaml` applies HTTP headers to each flow's browser session, before that flow's `setup` and `steps` run. It's the way past a deployment that gates access on a request header rather than on a URL or a login form.
+
+For example, a Vercel preview deployment behind Deployment Protection, which lets a request through when it carries a bypass token header:
+
+```yaml
+# flowspec.config.yaml
+baseUrl: https://myapp-preview.vercel.app
+headers:
+  x-vercel-protection-bypass: ${BYPASS_TOKEN}
+```
+
+Every request the session makes carries these headers — setup steps and flow steps alike — so no flow needs its own auth handling. The same shape works for a Netlify preview password header or an `Authorization` header on an API-gated environment.
+
+Header **values** support [`${VAR}` interpolation](#var-interpolation), which is how the token stays out of the committed config file. Header **names** are never interpolated — a `${...}` in a header name is left alone.
+
+`headers` is config-level only; there is no `headers` block in a flow file. Header auth is a property of the environment you're pointing at, not of the behavior your app is supposed to have, so it belongs next to the `baseUrl` it goes with rather than inside the specs — the same reasoning that keeps specs immutable and human-readable (see [ADR 0003](adr/0003-config-stays-committed-var-is-the-boundary.md)).
+
+**Failure behavior:** because `headers` always comes from the config file, a failure applying it is always a shared failure. The run aborts immediately — that flow is reported as failed with a `Failed to apply headers: ...` error, and every remaining flow is reported as skipped, exactly like a config-level `setup` failure.
+
+**`headers` or `setup`?** Use `headers` for header-based protection (Vercel protection bypass, Netlify, an `Authorization` header); use `setup` for navigation-based auth, where visiting a URL or submitting a login form plants a session cookie (the Shopify Oxygen token URL above). They compose — configure both when a deployment needs both.
+
 #### ${VAR} Interpolation
 
-String values in `flowspec.config.yaml` — `baseUrl`, `specsDir`, and any string inside `setup` — support `${VAR_NAME}` references, resolved from `process.env` when the config is loaded:
+String values in `flowspec.config.yaml` — `baseUrl`, `specsDir`, any string inside `setup`, and any value inside `headers` — support `${VAR_NAME}` references, resolved from `process.env` when the config is loaded:
 
 ```yaml
 baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
@@ -142,7 +165,7 @@ baseUrl: https://preview-abc123.myshopify.dev?_ab=${PREVIEW_TOKEN}
 
 This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN` in your shell, your CI secrets, or a `.env` file. Bun loads `.env` automatically; under Node pass `--env-file=.env` (Node 20.6+) or preload dotenv. FlowSpec itself never reads `.env` files. If you use a `.env` file, make sure it is listed in your project's `.gitignore` — moving the token out of `flowspec.config.yaml` and into a committed `.env` defeats the purpose.
 
-- Interpolation applies to config file string values only. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted.
+- Interpolation applies to config file string *values* only — never to keys, so a header name under `headers` is never substituted. It never runs on flow spec files under `specs/`, so a literal `${...}` in a flow's `visible` assertion (or anywhere else in a spec file) is never substituted.
 - A referenced variable that isn't set in `process.env` is a hard error: FlowSpec exits with code 2 and prints a message naming the missing variable and the config file path, before parsing any flow file or opening any browser session.
 
 ### Exit Codes

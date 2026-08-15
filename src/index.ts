@@ -128,6 +128,7 @@ async function runFlows(
   baseUrl: string,
   timeout: number | undefined,
   configSetup: FlowStep[] | undefined,
+  configHeaders: Record<string, string> | undefined,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
@@ -137,6 +138,7 @@ async function runFlows(
       baseUrl,
       timeout,
       setup: configSetup,
+      headers: configHeaders,
     });
     console.log(formatResult(result));
     results.push(result);
@@ -151,12 +153,21 @@ async function runFlows(
       result.error?.phase === "setup" &&
       flow.setup === undefined;
 
-    if (failedSetupFromConfig) {
-      // Say why the run stopped. Without this, the trailing "skipped" flows
-      // read as an unexplained truncation rather than a deliberate abort.
+    // Headers are config-only — a flow cannot declare its own — so a
+    // headers-phase failure is always shared and every remaining flow would
+    // fail applying the same headers.
+    const failedHeadersFromConfig =
+      !result.success && result.error?.phase === "headers";
+
+    if (failedSetupFromConfig || failedHeadersFromConfig) {
+      // Say why the run stopped, and name the part of the config that
+      // actually failed — pointing at `setup:` for a headers failure would
+      // send the user debugging a block that is fine (or absent).
       if (i + 1 < parsedFlows.length) {
         console.log(
-          `Aborting run: the shared setup in ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`,
+          failedHeadersFromConfig
+            ? `Aborting run: applying the shared headers from ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`
+            : `Aborting run: the shared setup in ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`,
         );
       }
 
@@ -274,6 +285,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
     mergedConfig.baseUrl,
     mergedConfig.timeout,
     mergedConfig.setup,
+    mergedConfig.headers,
   );
 
   // Print summary

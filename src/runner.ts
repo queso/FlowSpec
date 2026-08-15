@@ -37,6 +37,7 @@ export interface RunnerOptions {
   baseUrl?: string;
   timeout?: number;
   setup?: FlowStep[];
+  headers?: Record<string, string>;
 }
 
 /**
@@ -573,6 +574,23 @@ async function executeAssertion(
 }
 
 /**
+ * Apply extra HTTP headers to the browser session.
+ *
+ * The session persists across agent-browser invocations, so setting them once
+ * up front covers every request the flow makes afterwards. Read-only access to
+ * the headers object — it may be shared/aliased by the caller.
+ */
+async function applyHeaders(
+  headers: Record<string, string>,
+  session: string,
+): Promise<void> {
+  await execBrowser(
+    `set headers ${shellEscape(JSON.stringify(headers))}`,
+    session,
+  );
+}
+
+/**
  * Close a browser session
  */
 async function closeBrowserSession(session: string): Promise<void> {
@@ -599,6 +617,31 @@ export async function runFlow(
   const session = generateSessionName();
 
   try {
+    // Apply configured headers before anything else touches the browser, so
+    // setup steps and flow steps alike make their requests with the headers
+    // already in place. With no headers configured (undefined or empty), no
+    // browser command is issued at all — flows without headers pay nothing.
+    const headers = options?.headers;
+    if (headers && Object.keys(headers).length > 0) {
+      try {
+        await applyHeaders(headers, session);
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        // No step/action: nothing step-like failed here, and the message is
+        // self-describing.
+        return {
+          success: false,
+          flowName: flow.name,
+          duration: Date.now() - startTime,
+          error: {
+            message: `Failed to apply headers: ${errorMessage}`,
+            phase: "headers",
+          },
+        };
+      }
+    }
+
     // Resolve the effective setup: a flow-level setup block replaces the
     // config/CLI-level one entirely (no merging). An empty array is not
     // nullish, so an explicit `setup: []` on the flow opts out even when

@@ -76,10 +76,15 @@ export type FlowSpec = z.infer<typeof FlowSpecSchema>;
 /**
  * Schema for flow execution errors
  * Can describe either a step failure or an assertion failure
+ *
+ * `phase` marks a failure that happened outside the flow's own steps:
+ * - "setup" - a shared setup step failed
+ * - "headers" - applying config-level HTTP headers to the browser session
+ *   failed, before any step ran (so no step/action accompanies it)
  */
 export const FlowErrorSchema = z.object({
   message: z.string(),
-  phase: z.literal("setup").optional(),
+  phase: z.enum(["setup", "headers"]).optional(),
   step: z.number().optional(),
   action: StepActionSchema.optional(),
   assertion: StepAssertionSchema.optional(),

@@ -128,6 +128,29 @@ function resolvePort(explicitPort?: number): number {
 function createExpressApp(fixturesDir: string): Express {
   const app = express();
 
+  // Echoes back a request header so browser-level tests can prove headers
+  // are genuinely sent with the request. Client-side JS cannot read request
+  // headers, so a static fixture could never verify this. Registered before
+  // the static middleware so it is never shadowed by a fixture file.
+  app.get("/echo-header", (req, res) => {
+    const received = req.get("x-flowspec-test");
+    const body = received ? `Header: ${received}` : "No header received";
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(
+      `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Echo Header</title>
+</head>
+<body>
+  <h1 id="echo">${body}</h1>
+</body>
+</html>
+`,
+    );
+  });
+
   // Serve static files with correct MIME types
   app.use(
     express.static(fixturesDir, {
