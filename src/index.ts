@@ -190,6 +190,8 @@ async function runFlows(
   configSetup: FlowStep[] | undefined,
   configHeaders: Record<string, string> | undefined,
   configHeadersScope: "origin" | "all" | undefined,
+  configCwd: string | undefined,
+  configCaptureLimit: number | undefined,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
@@ -201,6 +203,8 @@ async function runFlows(
       setup: configSetup,
       headers: configHeaders,
       headersScope: configHeadersScope,
+      cwd: configCwd,
+      captureLimit: configCaptureLimit,
     });
     console.log(formatResult(result));
     results.push(result);
@@ -358,6 +362,8 @@ async function handleRunCommand(args: string[]): Promise<void> {
     mergedConfig.setup,
     mergedConfig.headers,
     mergedConfig.headersScope,
+    mergedConfig.cwd,
+    mergedConfig.captureLimit,
   );
 
   // Print summary

@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCliFlow } from "./cli-runner.js";
 import type {
   FlowError,
   FlowResult,
@@ -45,6 +46,10 @@ export interface RunnerOptions {
    * "all" is the deliberate opt-out — context-wide, every request, every host.
    */
   headersScope?: "origin" | "all";
+  /** CLI-surface working-directory override. Web flows ignore this. */
+  cwd?: string;
+  /** CLI-surface per-stream capture ceiling, in bytes. Web flows ignore this. */
+  captureLimit?: number;
 }
 
 /**
@@ -710,6 +715,19 @@ export async function runFlow(
   flow: FlowSpec,
   options?: RunnerOptions,
 ): Promise<FlowResult> {
+  // Surface dispatch: the ABSOLUTE FIRST thing runFlow does, before a
+  // browser session name is even generated, before headers are validated —
+  // a CLI flow must never resolve or launch agent-browser. runCliFlow owns
+  // the whole CLI lifecycle (working directory, steps, assertions); the
+  // web path below is completely untouched for surface: "web" (or absent).
+  if (flow.surface === "cli") {
+    return runCliFlow(flow, {
+      cwd: options?.cwd,
+      timeout: options?.timeout,
+      captureLimit: options?.captureLimit,
+    });
+  }
+
   const startTime = Date.now();
   const baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
   const timeout = options?.timeout ?? DEFAULT_TIMEOUT;

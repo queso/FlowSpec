@@ -1,0 +1,17 @@
+name: flowspec-init-scaffolds-and-protects
+description: |
+  `flowspec init` scaffolds a working project (config, example spec, and the
+  spec-protection hook) and, run a second time against an already-initialized
+  tree, reports the existing setup instead of clobbering it. This is
+  FlowSpec's own first CLI-surface consumer: a regression in `init` should
+  fail this spec, not just a human noticing scaffolded files look wrong.
+surface: cli
+steps:
+  - run: ["flowspec", "init"]
+  - run: ["flowspec", "init", "--dir", "./proj"]
+expect:
+  - file_exists: flowspec.config.yaml
+  - file_exists: specs/example.flow.yaml
+  - file_exists: .claude/settings.local.json
+  - file_contains: { path: .claude/settings.local.json, text: "Flow specs are immutable" }
+  - stdout_contains: "Found existing config:"

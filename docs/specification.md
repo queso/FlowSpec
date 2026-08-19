@@ -80,6 +80,11 @@ This context helps agents understand what business goal they're preserving when 
 name: string                    # Identifier for the flow
 description: string             # Business context and intent
 
+surface: "web" | "cli"          # Optional, default "web". Selects the grammar
+                                 # for setup/steps/expect below — see "Surface:
+                                 # web or cli" for the CLI grammar and its
+                                 # required minimum FlowSpec version.
+
 setup:                          # Optional: steps to run once, in the same
                                  # browser session, before `steps` (e.g.
                                  # planting an auth session). Same grammar as
@@ -112,6 +117,56 @@ spell that URL out absolutely; writing `visit: "/"` against that `baseUrl` navig
 to `https://preview.example.dev/` with the token stripped, and whatever session the
 token would have planted is never established.
 
+### Surface: web or cli
+
+`surface` is the discriminator between the two grammars a flow can be written in. It is optional, and its absence means exactly the same thing as `surface: web` — the schema above, unchanged. `surface: cli` switches `setup`, `steps`, and `expect` to a different, command-line-oriented grammar entirely; the two never mix within one flow (a web verb in a CLI flow, or a `run` step in a web flow, is a schema validation error naming the offending verb and the flow's surface).
+
+**Minimum version: flowspec v0.2.0.** `surface` did not exist before this version. Because FlowSpec's top-level schema does not reject unrecognized keys, an older binary parsing a `surface: cli` flow silently drops the `surface` key and then validates `steps`/`expect` against the web-only grammar it knows, which a `run` step or a CLI assertion cannot satisfy — the practical result is a confusing parse failure, not a silent misinterpretation as a passing web flow. Projects adopting `surface: cli` should pin a minimum FlowSpec version.
+
+```yaml
+name: build-succeeds
+description: The production build completes and writes the expected bundle
+surface: cli
+
+setup:                          # Optional: same CLI step grammar as `steps`,
+                                 # run first, in the same working directory.
+                                 # Every setup step's exit code is fatal on
+                                 # mismatch (no "final step" leniency — see
+                                 # "Exit codes within a CLI flow" below).
+  - run: ["node", "scripts/seed-fixture.js"]
+
+steps:                          # CLI run steps, executed in order
+  - run: "npm run build"        # string form: whitespace-split, no shell
+  - run: ["node", "-e", "console.log('done')"]  # array form: passed through untouched
+    stdin: "y\n"                # optional: written to the command, then closed
+    env:                        # optional: overlaid on the inherited env for
+      NO_COLOR: "1"             # this step only, never leaked to siblings
+    timeout: 5000                # optional: ms before the command is killed
+    expect_exit: 0               # optional: see "Exit codes within a CLI flow"
+
+expect:                         # The eight CLI assertions, checked against
+  - exit_code: 0                # the LAST step's captured result
+  - stdout_contains: "done"
+  - stdout_matches: "^done$"
+  - stderr_contains: "warning"
+  - stderr_matches: "^warning:"
+  - file_exists: "dist/bundle.js"                       # path resolved against the
+  - file_contains: { path: "dist/bundle.js", text: "//# sourceMappingURL" }  # working directory
+  - json_output: { path: "$.status", equals: "ok" }      # dot-path into stdout, parsed as JSON
+```
+
+**No shell, ever.** CLI steps never invoke a shell. String-form `run` is split on whitespace only (no quote handling, no metacharacter interpretation): `run: "echo a && echo b"` runs the single command `echo` with four literal arguments `a`, `&&`, `echo`, `b` — nothing is chained, and a quoted substring is not reassembled into one argument. Two escape hatches cover what a shell would otherwise provide: the **array form** for an argument containing spaces or quotes (`run: ["node", "-e", "an arg with spaces"]`), and invoking a shell explicitly (or a script file) for pipes, redirects, globbing, or `&&` chaining (`run: ["bash", "-c", "cat *.log | grep ERROR"]`).
+
+**Retry split.** `exit_code`, `stdout_contains`/`stdout_matches`, `stderr_contains`/`stderr_matches`, and `json_output` are checked exactly once against the last step's already-captured output — that output cannot change, so there is nothing to retry. `file_exists` and `file_contains` poll within the flow's timeout instead, because the file they check for may still be written by something asynchronous after the triggering command has already returned — the same rationale as the web surface's `wait_for` and assertion retries.
+
+**Exit codes within a CLI flow.** This is the least guessable rule in the grammar: `expect_exit` is honored on every step, including the last one, but only the **absence** of `expect_exit` on the final step makes its exit code non-fatal.
+
+- A **non-final** step's exit code must equal its `expect_exit` (default `0`) or the flow fails immediately at that step, and no later step runs — fail-fast, because a setup or build step that didn't succeed makes everything after it meaningless.
+- The **final** step is different, deliberately: if it declares `expect_exit`, that's checked exactly like any other step; if it does **not**, its exit code is never fatal by itself, and the flow proceeds to `expect` regardless of what the command returned. This is what makes "this command should fail" a first-class, error-path spec rather than something the runner treats as broken.
+- **Setup steps** always use the non-final rule, including the last step in `setup` — setup has no assertion phase of its own for a bare exit code to defer to.
+
+**Working directory.** Every CLI flow's `setup` and `steps` run inside one shared working directory. With no `cwd` configured (see [Configuration File](#configuration-file)), FlowSpec creates a fresh, empty temporary directory per flow (prefixed `flowspec-`), deletes it when the flow passes, and keeps it — printing its absolute path in the failure report, the CLI analog of the web surface's failure screenshot — when the flow fails. A configured `cwd` is used as-is and is never created or deleted by FlowSpec, on pass or fail.
+
 ### Full Example
 
 ```yaml
@@ -142,14 +197,17 @@ the current directory. CLI options override file values.
 
 ```yaml
 baseUrl: string                 # Origin every relative `visit:` resolves against
-timeout: number                 # Assertion retry timeout, in milliseconds
+timeout: number                 # Assertion retry timeout (web), in milliseconds.
+                                 # Also the CLI kill-deadline fallback — see
+                                 # "CLI-surface settings" below.
 specsDir: string                # Directory flows are loaded from
 
 setup:                          # Optional: steps run once per flow, in that flow's
                                  # own browser session, before its `steps`. Shared by
                                  # every flow; a flow-level `setup` replaces it, and
                                  # `setup: []` on a flow opts out. Same grammar as a
-                                 # flow's `steps`.
+                                 # flow's `steps`. WEB-ONLY — never applied to a
+                                 # `surface: cli` flow (see below).
   - visit: "https://preview.example.dev?_ab=${PREVIEW_TOKEN}"
 
 headers:                        # Optional: HTTP headers applied to each flow's
@@ -163,6 +221,12 @@ headersScope: "origin" | "all"  # Optional: how far `headers` travel. Default
                                  # "origin" — only requests to `baseUrl`'s origin
                                  # carry them. "all" sends them context-wide, on
                                  # every request to every origin.
+
+cwd: string                     # Optional, CLI-surface only. Working directory
+                                 # for surface: cli flows — see below.
+
+captureLimit: number            # Optional, CLI-surface only. Bytes per captured
+                                 # stdout/stderr stream — see below.
 ```
 
 `headers` is config-level only — there is no `headers` block in a flow file. Header
@@ -193,6 +257,16 @@ A failure applying `headers` aborts the run, since the headers are shared by eve
 flow: the flow being run is reported as failed with a `Failed to apply headers: ...`
 error and every remaining flow is reported as skipped — the same contract as a
 config-level `setup` failure.
+
+### CLI-Surface Settings
+
+`cwd` and `captureLimit` configure `surface: cli` flows only; web flows ignore both, and neither has a `--flag` equivalent.
+
+`cwd` is the working directory every CLI flow's commands run in — a relative value resolves against the directory FlowSpec was invoked from. Leave it unset and each CLI flow gets its own fresh, isolated temporary directory instead (deleted on pass, kept on fail — see "Working directory" under [Surface: web or cli](#surface-web-or-cli)).
+
+`captureLimit` bounds how much of a CLI step's stdout and stderr FlowSpec captures, in bytes, each stream independent of the other; output beyond it is truncated with a `[truncated]` marker. There is **no config-level default** for `captureLimit` — leaving it unset does not write a value into the loaded config. The 5 MB (`5 * 1024 * 1024` byte) default is applied downstream, at the point a CLI step actually executes, not at config-load time; this config key only overrides that downstream default when present.
+
+Config-level `setup` (documented above) uses the web step grammar and is never applied to a `surface: cli` flow — a `run` step inside config-level `setup` is a validation error. A CLI flow that needs setup work declares its own flow-level `setup` block instead, in the CLI step grammar (see [Surface: web or cli](#surface-web-or-cli)).
 
 ## Execution Modes
 
@@ -253,6 +327,44 @@ Usage:
 bunx flowspec run specs/                     # Run all flows
 bunx flowspec run specs/checkout.flow.yaml   # Run single flow
 ```
+
+### CLI Mode: No Browser at All
+
+A `surface: cli` flow (see [Surface: web or cli](#surface-web-or-cli)) is dispatched before any of the logic above runs — before a browser session name is even generated, before `headers` are validated. `flowspec run` decides which surface a flow uses purely by reading its `surface` field, and a CLI flow never resolves or launches `agent-browser`. This is what makes a CLI-only project work on a machine that doesn't have `agent-browser` installed at all: the dependency noted in [Installation](../README.md#installation) is required only if at least one flow actually uses the web surface.
+
+Simplified CLI runner logic:
+
+```typescript
+import { spawn } from 'node:child_process'; // FlowSpec spawns directly — no shell
+
+async function runCliFlow(flow: Flow) {
+  const workdir = createWorkingDirectory(flow); // fresh temp dir, or the configured cwd
+
+  let lastResult;
+  for (const [index, step] of flow.steps.entries()) {
+    const argv = Array.isArray(step.run) ? step.run : step.run.split(/\s+/);
+    const result = await spawnAndCapture(argv, { cwd: workdir, ...step });
+    lastResult = result;
+
+    const isLast = index === flow.steps.length - 1;
+    const expected = step.expect_exit ?? 0;
+    const exitCodeIsFatal = !isLast || step.expect_exit !== undefined;
+    if (exitCodeIsFatal && result.exitCode !== expected) {
+      return fail(workdir, `step ${index} exited ${result.exitCode}, expected ${expected}`);
+    }
+  }
+
+  for (const assertion of flow.expect) {
+    const failure = await evaluateCliAssertion(assertion, lastResult, workdir);
+    if (failure) return fail(workdir, failure.message);
+  }
+
+  deleteWorkingDirectory(workdir); // only on pass — a fresh temp dir is kept on failure
+  return pass();
+}
+```
+
+Every command is spawned directly from its `run` array (or the whitespace-split string form) — never through a shell, and never through `agent-browser`. See [No shell, ever](#surface-web-or-cli) for what that means for pipes, quoting, and shell metacharacters.
 
 ### Development Mode: Agent-Driven Execution
 

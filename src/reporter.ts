@@ -1,4 +1,4 @@
-import type { FlowError, FlowResult, StepAction } from "./types.js";
+import type { CliStep, FlowError, FlowResult, StepAction } from "./types.js";
 
 // ANSI color codes
 const GREEN = "\x1b[32m";
@@ -18,9 +18,15 @@ function formatDuration(ms: number): string {
 }
 
 /**
- * Format a StepAction into a human-readable string
+ * Format a StepAction (web) or CliStep (CLI) into a human-readable string.
+ *
+ * CLI action rendering here is intentionally minimal — a short "run ..."
+ * label, not a full CLI-aware report. The full CLI failure report (exit
+ * code, stdout/stderr excerpts, kept workdir) is a separate item's scope;
+ * this only keeps a CLI action from silently falling through to "unknown
+ * action" now that FlowErrorSchema.action accepts one.
  */
-function formatAction(action: StepAction): string {
+function formatAction(action: StepAction | CliStep): string {
   if ("visit" in action) {
     return `visit "${action.visit}"`;
   }
@@ -33,7 +39,48 @@ function formatAction(action: StepAction): string {
   if ("select" in action) {
     return "select";
   }
+  if ("run" in action) {
+    const command = Array.isArray(action.run)
+      ? action.run.join(" ")
+      : action.run;
+    return `run "${command}"`;
+  }
   return "unknown action";
+}
+
+/**
+ * Build the CLI-specific failure lines (exit code, bounded stdout/stderr
+ * excerpts, and — when present — the kept working directory) shared by
+ * formatError and formatResult, so the two entry points can never drift out
+ * of sync with each other.
+ *
+ * Gated on `error.exitCode !== undefined`: that field's presence alone
+ * signals a CLI failure (a web failure never sets it) — independent of
+ * whether `step`/`action` are also present, since an assertion failure
+ * (this item's main concern) doesn't carry a step index the way an
+ * action-step failure does. stdout/stderr are rendered as-is: they're
+ * already bounded/truncated upstream (src/cli-assertions.ts), so a
+ * truncation marker baked in there is preserved verbatim, never re-cut here.
+ * `workdir` gets its own line only when present — a configured cwd (the
+ * user's own directory) never sets it, so nothing "working directory"-shaped
+ * is printed for that case.
+ */
+function formatCliFailureLines(error: FlowError): string[] {
+  if (error.exitCode === undefined) {
+    return [];
+  }
+
+  const lines = [
+    `Exit code: ${error.exitCode}`,
+    `stdout: ${error.stdout ?? ""}`,
+    `stderr: ${error.stderr ?? ""}`,
+  ];
+
+  if (error.workdir !== undefined) {
+    lines.push(`Kept working directory: ${error.workdir}`);
+  }
+
+  return lines;
 }
 
 /**
@@ -50,6 +97,7 @@ export function formatError(error: FlowError): string {
   }
 
   parts.push(`Error: ${error.message}`);
+  parts.push(...formatCliFailureLines(error));
 
   return parts.join("\n  ");
 }
@@ -82,6 +130,9 @@ export function formatResult(result: FlowResult): string {
       );
     }
     lines.push(`  Error: ${result.error.message}`);
+    for (const cliLine of formatCliFailureLines(result.error)) {
+      lines.push(`  ${cliLine}`);
+    }
   }
 
   return lines.join("\n");

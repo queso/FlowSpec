@@ -5,25 +5,145 @@ import { z } from "zod";
 import { FlowStepSchema } from "./types.js";
 
 /**
- * Schema for FlowSpec project configuration
+ * The key that names what a raw (not-yet-validated) config-level setup step
+ * object is trying to do, for use in a human-facing error message — mirrors
+ * the `stepVerb()` helper in src/types.ts.
  */
-export const FlowSpecConfigSchema = z.object({
-  baseUrl: z.string().url().optional().default("http://localhost:3000"),
-  timeout: z.number().positive().optional().default(10000),
-  specsDir: z.string().optional().default("specs/"),
-  setup: z.array(FlowStepSchema).optional(),
-  // Config-level only: HTTP headers applied to the browser session for
-  // header-protected deployments (e.g. a Vercel/Netlify bypass token).
-  // Deliberately absent from FlowSpecSchema — auth/environment concerns
-  // stay in config, out of the committed flow specs (see adr/0003).
-  headers: z.record(z.string()).optional(),
-  // How far those headers travel. Only meaningful alongside `headers`.
-  // Absent means the runner's default, "origin": headers go to baseUrl's
-  // origin only, so a bypass token is never handed to a CDN, an analytics
-  // pixel, or any other third party the page happens to request. "all" is
-  // the explicit opt-out for deployments that need them context-wide.
-  headersScope: z.enum(["origin", "all"]).optional(),
-});
+function configStepVerb(step: unknown): string {
+  if (step && typeof step === "object" && !Array.isArray(step)) {
+    const [firstKey] = Object.keys(step as Record<string, unknown>);
+    return firstKey ?? "unknown";
+  }
+  return "unknown";
+}
+
+/** The web-surface step verbs — mirrors WEB_STEP_VERBS in src/types.ts. */
+const WEB_STEP_VERBS = [
+  "visit",
+  "click",
+  "fill",
+  "select",
+  "wait_for",
+] as const;
+
+/** The web verb present on `step`, if any (checked against the known set, not just "the first key"). */
+function matchedWebVerb(step: unknown): string | undefined {
+  if (!step || typeof step !== "object" || Array.isArray(step)) {
+    return undefined;
+  }
+  const record = step as Record<string, unknown>;
+  return WEB_STEP_VERBS.find((verb) => verb in record);
+}
+
+/**
+ * Re-parse a step whose verb IS a recognized web verb but that otherwise
+ * failed FlowStepSchema (an extra key, a wrong value type), and surface the
+ * SPECIFIC problem rather than Zod's generic union-failure wrapper.
+ *
+ * FlowStepSchema is a union of five single-verb strict object schemas. When
+ * none of the five match, Zod's default behavior varies by failure shape:
+ * an extra-key-only mismatch (verified interactively) happens to surface a
+ * direct top-level "Unrecognized key(s)" issue, but a wrong-value-type
+ * mismatch surfaces only the generic "invalid_union" wrapper ("Invalid
+ * input") at the top level — the useful "Expected string, received number"
+ * detail is buried inside `unionErrors[branch].issues[]`, one branch per
+ * verb. Since the matched verb is already known here, the one relevant
+ * branch (the one that recognizes that verb as its own field, rather than
+ * complaining it's an unrecognized key) is picked out directly.
+ */
+function describeMalformedWebStep(step: unknown, verb: string): string {
+  const result = FlowStepSchema.safeParse(step);
+  if (result.success) {
+    return "";
+  }
+
+  const [topIssue] = result.error.issues;
+  if (topIssue?.code === "invalid_union") {
+    const matchingBranch = topIssue.unionErrors.find((branchError) =>
+      branchError.issues.some((issue) => issue.path[0] === verb),
+    );
+    if (matchingBranch) {
+      return matchingBranch.issues
+        .filter((issue) => issue.path[0] === verb)
+        .map((issue) => issue.message)
+        .join("; ");
+    }
+  }
+
+  return result.error.issues.map((issue) => issue.message).join("; ");
+}
+
+/**
+ * Schema for FlowSpec project configuration
+ *
+ * `setup`'s field type is deliberately permissive (`z.any()` items) so a
+ * non-web step (e.g. a CLI `run` step) parses structurally and the
+ * superRefine below can name the offending verb explicitly — binding the
+ * field directly to `z.array(FlowStepSchema)` would make Zod's own
+ * invalid_union error the one reported, whose top-level message is just
+ * "Invalid input" (the useful "Unrecognized key(s): 'run'" detail is buried
+ * three levels deep in `unionErrors[].issues[]`, which loadConfigFile's
+ * error formatting never reaches). Config-level setup stays web-only by
+ * design (see adr/0003 and the PRD) — `FlowStepSchema` is WI-800's WEB step
+ * schema, unchanged; this does not accept CLI run steps.
+ */
+export const FlowSpecConfigSchema = z
+  .object({
+    baseUrl: z.string().url().optional().default("http://localhost:3000"),
+    timeout: z.number().positive().optional().default(10000),
+    specsDir: z.string().optional().default("specs/"),
+    setup: z.array(z.any()).optional(),
+    // Config-level only: HTTP headers applied to the browser session for
+    // header-protected deployments (e.g. a Vercel/Netlify bypass token).
+    // Deliberately absent from FlowSpecSchema — auth/environment concerns
+    // stay in config, out of the committed flow specs (see adr/0003).
+    headers: z.record(z.string()).optional(),
+    // How far those headers travel. Only meaningful alongside `headers`.
+    // Absent means the runner's default, "origin": headers go to baseUrl's
+    // origin only, so a bypass token is never handed to a CDN, an analytics
+    // pixel, or any other third party the page happens to request. "all" is
+    // the explicit opt-out for deployments that need them context-wide.
+    headersScope: z.enum(["origin", "all"]).optional(),
+    // CLI-surface working-directory override. A relative value resolves
+    // against process.cwd() — that resolution, and creating a temp
+    // directory when this is absent, is src/workdir.ts's job, not
+    // config-loading's.
+    cwd: z.string().optional(),
+    // CLI-surface per-stream capture ceiling, in bytes. No schema-level
+    // default: this stays undefined when absent, and DEFAULT_CAPTURE_LIMIT
+    // (exported by src/exec.ts) is applied downstream by the consumer that
+    // actually enforces it, not by config loading.
+    captureLimit: z.number().int().positive().optional(),
+  })
+  .superRefine((config, ctx) => {
+    // Two-tier check, mirroring src/types.ts's validateStepForSurface: a
+    // verb from outside the web family (e.g. a CLI `run` step) gets the
+    // custom "Unsupported step" message naming the offending verb; a step
+    // whose verb IS a valid web verb but is otherwise malformed (an extra
+    // key, a wrong value type) surfaces that specific problem instead of a
+    // misleading "unsupported" wrapper around a verb that actually is
+    // supported.
+    config.setup?.forEach((step: unknown, index: number) => {
+      const verb = matchedWebVerb(step);
+      if (verb === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["setup", index],
+          message: `Unsupported step "${configStepVerb(step)}" in config-level setup (web steps only)`,
+        });
+        return;
+      }
+
+      const detail = describeMalformedWebStep(step, verb);
+      if (detail) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["setup", index],
+          message: detail,
+        });
+      }
+    });
+  });
 
 export type FlowSpecConfig = z.infer<typeof FlowSpecConfigSchema>;
 
@@ -206,5 +326,9 @@ export function mergeConfig(
     // which of the two sources supplied any given header.
     headers: cliOptions.headers ?? config.headers,
     headersScope: config.headersScope,
+    // Config-only, like setup/headersScope: no CLI-options equivalent for
+    // either key in this item's scope.
+    cwd: config.cwd,
+    captureLimit: config.captureLimit,
   };
 }
