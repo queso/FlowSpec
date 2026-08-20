@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCliFlow } from "../src/cli-runner";
-import type { FlowSpec } from "../src/types";
+import type { CliFlowSpec } from "../src/types";
 
 /**
  * Tests for WI-811: the CLI runner's flow-level setup phase — a `surface:
@@ -77,7 +77,7 @@ function keepFailedWorkdir(result: { error?: { workdir?: string } }): string {
 function cliFlow(
   steps: Record<string, unknown>[],
   overrides: Record<string, unknown> = {},
-): FlowSpec {
+): CliFlowSpec {
   return {
     name: "cli-flow",
     description: "A cli flow",
@@ -85,7 +85,7 @@ function cliFlow(
     steps,
     expect: [],
     ...overrides,
-  } as unknown as FlowSpec;
+  } as unknown as CliFlowSpec;
 }
 
 describe("setup runs before steps, sharing the same working directory", () => {

@@ -197,9 +197,11 @@ the current directory. CLI options override file values.
 
 ```yaml
 baseUrl: string                 # Origin every relative `visit:` resolves against
-timeout: number                 # Assertion retry timeout (web), in milliseconds.
-                                 # Also the CLI kill-deadline fallback — see
-                                 # "CLI-surface settings" below.
+timeout: number                 # Assertion retry timeout, in milliseconds. Never a
+                                 # process deadline — see `stepTimeout`.
+stepTimeout: number             # Optional, CLI-surface only. Milliseconds a single
+                                 # `run` step's process may live before it is killed.
+                                 # Positive integer; defaults to 60000.
 specsDir: string                # Directory flows are loaded from
 
 setup:                          # Optional: steps run once per flow, in that flow's
@@ -223,7 +225,8 @@ headersScope: "origin" | "all"  # Optional: how far `headers` travel. Default
                                  # every request to every origin.
 
 cwd: string                     # Optional, CLI-surface only. Working directory
-                                 # for surface: cli flows — see below.
+                                 # for surface: cli flows — see below. Must be
+                                 # non-empty when present.
 
 captureLimit: number            # Optional, CLI-surface only. Bytes per captured
                                  # stdout/stderr stream — see below.
@@ -260,9 +263,11 @@ config-level `setup` failure.
 
 ### CLI-Surface Settings
 
-`cwd` and `captureLimit` configure `surface: cli` flows only; web flows ignore both, and neither has a `--flag` equivalent.
+`cwd`, `stepTimeout` and `captureLimit` configure `surface: cli` flows only; web flows ignore all three. `stepTimeout` has the `--step-timeout <ms>` flag; `cwd` and `captureLimit` have no `--flag` equivalent.
 
-`cwd` is the working directory every CLI flow's commands run in — a relative value resolves against the directory FlowSpec was invoked from. Leave it unset and each CLI flow gets its own fresh, isolated temporary directory instead (deleted on pass, kept on fail — see "Working directory" under [Surface: web or cli](#surface-web-or-cli)).
+`cwd` is the working directory every CLI flow's commands run in — a relative value resolves against the directory FlowSpec was invoked from. Leave it unset and each CLI flow gets its own fresh, isolated temporary directory instead (deleted on pass, kept on fail — see "Working directory" under [Surface: web or cli](#surface-web-or-cli)). An empty (or whitespace-only) `cwd` is a validation error rather than a silent fallback: it would otherwise resolve to the directory FlowSpec was invoked from — the real project tree — turning an isolated, disposable workspace into the working copy, uncleaned.
+
+`stepTimeout` is the process-kill deadline for one `run` step, and is deliberately a separate key from `timeout`: an assertion retry budget and a process deadline answer different questions, and using one value for both meant a ten-second retry window silently killed any command that legitimately ran longer (an install, a build, a network fetch). A step's own `timeout` overrides it. `--step-timeout` rejects `0`, negatives and non-integers with exit code 2, since those reach the spawn primitive as a real, immediate kill deadline rather than as "no limit".
 
 `captureLimit` bounds how much of a CLI step's stdout and stderr FlowSpec captures, in bytes, each stream independent of the other; output beyond it is truncated with a `[truncated]` marker. There is **no config-level default** for `captureLimit` — leaving it unset does not write a value into the loaded config. The 5 MB (`5 * 1024 * 1024` byte) default is applied downstream, at the point a CLI step actually executes, not at config-load time; this config key only overrides that downstream default when present.
 

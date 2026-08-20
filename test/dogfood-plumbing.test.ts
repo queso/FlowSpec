@@ -91,7 +91,8 @@ description: proves the linked flowspec binary actually runs a cli spec
 surface: cli
 steps:
   - run: "${execPath} -e process.exit(0)"
-expect: []
+expect:
+  - exit_code: 0
 `,
       );
 

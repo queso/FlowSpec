@@ -17,10 +17,10 @@
  * async writer can still change the answer.
  */
 
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import { fileContains, fileExists } from "./file-matchers.js";
 import {
-  EXCERPT_LIMIT,
+  boundedExcerpt,
   matchContains,
   matchJsonPath,
   matchRegex,
@@ -45,14 +45,44 @@ interface LastStepResult {
   exitCode: number;
 }
 
-const TRUNCATION_MARKER = "[truncated]";
+type ResolvedPath =
+  | { ok: true; absolutePath: string }
+  | { ok: false; message: string };
 
-/** Head-truncate `text` to EXCERPT_LIMIT, matching src/matchers.ts's excerpt convention. */
-function boundedExcerpt(text: string): string {
-  if (text.length <= EXCERPT_LIMIT) {
-    return text;
+/**
+ * Resolve a file-assertion path against `workdir` and confine it there.
+ *
+ * The per-flow temp working directory is the whole point of CLI isolation,
+ * so a path that resolves outside it — an absolute path like "/etc/passwd",
+ * or a "../" traversal — is rejected as out-of-bounds rather than answered
+ * by whatever happens to exist elsewhere on disk. Without this, such an
+ * assertion silently PASSES (a wrong green, not an exploit: specs are
+ * user-authored) and says nothing about the flow's own output.
+ *
+ * The containment check compares fully resolved absolute paths and requires
+ * either an exact match or a separator-terminated prefix, so a sibling
+ * directory whose name merely starts with the workdir's name
+ * ("/tmp/wd-extra" against "/tmp/wd") is correctly treated as outside.
+ */
+function resolveWithinWorkdir(
+  requestedPath: string,
+  workdir: string,
+): ResolvedPath {
+  const root = resolve(workdir);
+  const absolutePath = resolve(root, requestedPath);
+
+  // A root that is already a filesystem root ("/", "C:\\") ends in the
+  // separator; appending another would produce "//" and reject everything.
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  const isInside = absolutePath === root || absolutePath.startsWith(prefix);
+  if (!isInside) {
+    return {
+      ok: false,
+      message: `File path "${requestedPath}" resolves to ${absolutePath}, which is outside the flow working directory ${root}`,
+    };
   }
-  return `${text.slice(0, EXCERPT_LIMIT)}${TRUNCATION_MARKER}`;
+
+  return { ok: true, absolutePath };
 }
 
 /**
@@ -141,8 +171,11 @@ export async function evaluateCliAssertion(
   }
 
   if ("file_exists" in assertion) {
-    const absolutePath = resolve(workdir, assertion.file_exists);
-    const failure = await fileExists(absolutePath, timeout);
+    const resolved = resolveWithinWorkdir(assertion.file_exists, workdir);
+    if (!resolved.ok) {
+      return toFailure(resolved.message, lastStep, workdir);
+    }
+    const failure = await fileExists(resolved.absolutePath, timeout);
     return failure ? toFailure(failure.message, lastStep, workdir) : undefined;
   }
 
@@ -161,8 +194,11 @@ export async function evaluateCliAssertion(
     if (text === undefined) {
       return toFailure('Missing "text" in file_contains', lastStep, workdir);
     }
-    const absolutePath = resolve(workdir, path);
-    const failure = await fileContains(absolutePath, text, timeout);
+    const resolved = resolveWithinWorkdir(path, workdir);
+    if (!resolved.ok) {
+      return toFailure(resolved.message, lastStep, workdir);
+    }
+    const failure = await fileContains(resolved.absolutePath, text, timeout);
     return failure ? toFailure(failure.message, lastStep, workdir) : undefined;
   }
 

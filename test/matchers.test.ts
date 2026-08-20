@@ -72,6 +72,30 @@ describe("matchRegex", () => {
     const failure = matchRegex("some text", "(unclosed");
     expect(failure).toBeDefined();
   });
+
+  describe("multiline anchoring", () => {
+    // CLI output is multi-line by nature, so `^`/`$` anchor per line, not
+    // to the whole string — the behavior a spec author writing
+    // `stderr_matches: "^error"` against real command output expects.
+    it("anchors ^ to the start of any line, not only the start of the whole string", () => {
+      expect(matchRegex("warn\nerror: x", "^error")).toBeUndefined();
+    });
+
+    it("anchors $ to the end of any line, not only the end of the whole string", () => {
+      expect(matchRegex("done\ntrailing", "^done$")).toBeUndefined();
+    });
+
+    it("still fails when no line matches the anchored pattern", () => {
+      const failure = matchRegex("warn\nnotice: x", "^error");
+      expect(failure).toBeDefined();
+      expect(failure?.message).toContain("^error");
+    });
+
+    it("leaves single-line anchoring semantics unchanged", () => {
+      expect(matchRegex("555-1234", "^\\d{3}-\\d{4}$")).toBeUndefined();
+      expect(matchRegex("abc", "^\\d{3}-\\d{4}$")).toBeDefined();
+    });
+  });
 });
 
 describe("matchJsonPath: value equality", () => {

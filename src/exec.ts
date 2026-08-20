@@ -43,6 +43,21 @@ export const DEFAULT_CAPTURE_LIMIT = 5 * 1024 * 1024;
 const TIMEOUT_KILL_GRACE_PERIOD_MS = 500;
 
 /**
+ * How long to keep waiting for stdout/stderr to reach EOF *after* the child
+ * has exited. Killing the direct child does not necessarily close the pipes:
+ * a detached grandchild it spawned (`sh -c "sleep 20 & echo started"`)
+ * inherits the same write ends and holds them open for its own lifetime, so
+ * reading the streams to completion can outlive the timeout by an unbounded
+ * margin — verified empirically: a 500ms timeout was still pending 5000ms
+ * later. Past this grace period the reads are cancelled and whatever was
+ * already buffered is returned, so the timeout is a real deadline. Long
+ * enough for a well-behaved process's pending output to flush, short enough
+ * not to be felt. Not exported/configurable — like the kill grace period,
+ * this is termination hygiene, not a contract surface.
+ */
+const STREAM_DRAIN_GRACE_PERIOD_MS = 250;
+
+/**
  * Appended to a stream's captured text when it was cut off at its capture
  * limit — matches src/matchers.ts's own excerpt-truncation marker
  * convention. Duplicated here rather than imported: exec.ts otherwise has no
@@ -94,59 +109,103 @@ interface BoundedRead {
 }
 
 /**
- * Read `stream` to completion, decoded as UTF-8, capturing at most `limit`
- * bytes. The stream is drained in full regardless of the limit — bytes past
- * it are counted but discarded, never buffered — so a runaway writer can
- * never block on pipe backpressure waiting for a reader that stopped
- * consuming. This is the enforcement point for the "streaming, not
- * capture-then-slice" requirement: memory use is bounded by `limit`
- * throughout the read, not just in the final result.
+ * Bytes captured so far by an in-flight bounded read. Kept as mutable state
+ * the reader appends to (rather than only as the read's return value) so
+ * that a read which is abandoned mid-flight — see
+ * STREAM_DRAIN_GRACE_PERIOD_MS — can still be finalized into whatever it had
+ * already buffered, instead of the partial output being thrown away.
  */
-async function readBoundedStream(
+interface StreamCapture {
+  chunks: Uint8Array[];
+  bytes: number;
+  truncated: boolean;
+}
+
+/** Handle on a bounded read that is already running. */
+interface BoundedReadHandle {
+  capture: StreamCapture;
+  /** Resolves when the stream reaches EOF (or the read is cancelled). */
+  done: Promise<void>;
+  /** Stop reading and release the pipe, keeping what was captured. */
+  cancel(): void;
+}
+
+/**
+ * Start reading `stream` in the background, capturing at most `limit` bytes
+ * into a StreamCapture. The stream is drained in full regardless of the
+ * limit — bytes past it are counted but discarded, never buffered — so a
+ * runaway writer can never block on pipe backpressure waiting for a reader
+ * that stopped consuming. This is the enforcement point for the "streaming,
+ * not capture-then-slice" requirement: memory use is bounded by `limit`
+ * throughout the read, not just in the final result.
+ *
+ * The read starts immediately rather than being awaited by the caller first:
+ * a child writing more than one pipe buffer's worth of output blocks until
+ * someone consumes it, so the reads must already be in flight while the
+ * caller waits on `proc.exited`.
+ */
+function startBoundedRead(
   stream: ReadableStream<Uint8Array>,
   limit: number,
-): Promise<BoundedRead> {
+): BoundedReadHandle {
+  const capture: StreamCapture = { chunks: [], bytes: 0, truncated: false };
   const reader = stream.getReader();
-  const capturedChunks: Uint8Array[] = [];
-  let capturedBytes = 0;
-  let truncated = false;
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      if (!value || value.length === 0) {
-        continue;
-      }
+  const done = (async () => {
+    try {
+      while (true) {
+        const { done: finished, value } = await reader.read();
+        if (finished) {
+          break;
+        }
+        if (!value || value.length === 0) {
+          continue;
+        }
 
-      const remaining = limit - capturedBytes;
-      if (remaining <= 0) {
-        truncated = true;
-        continue;
+        const remaining = limit - capture.bytes;
+        if (remaining <= 0) {
+          capture.truncated = true;
+          continue;
+        }
+        if (value.length > remaining) {
+          capture.chunks.push(value.subarray(0, remaining));
+          capture.bytes += remaining;
+          capture.truncated = true;
+        } else {
+          capture.chunks.push(value);
+          capture.bytes += value.length;
+        }
       }
-      if (value.length > remaining) {
-        capturedChunks.push(value.subarray(0, remaining));
-        capturedBytes += remaining;
-        truncated = true;
-      } else {
-        capturedChunks.push(value);
-        capturedBytes += value.length;
-      }
+    } finally {
+      reader.releaseLock();
     }
-  } finally {
-    reader.releaseLock();
-  }
+  })();
 
-  const buffer = new Uint8Array(capturedBytes);
+  return {
+    capture,
+    done,
+    cancel() {
+      // Cancelling settles the in-flight read(), which lets the loop above
+      // finish and release the lock. Any rejection here is irrelevant: the
+      // pipe is being discarded either way.
+      void reader.cancel().catch(() => {});
+    },
+  };
+}
+
+/** Decode what a capture holds so far into its final text form. */
+function finalizeCapture(capture: StreamCapture): BoundedRead {
+  const buffer = new Uint8Array(capture.bytes);
   let offset = 0;
-  for (const chunk of capturedChunks) {
+  for (const chunk of capture.chunks) {
     buffer.set(chunk, offset);
     offset += chunk.length;
   }
 
-  return { text: new TextDecoder("utf-8").decode(buffer), truncated };
+  return {
+    text: new TextDecoder("utf-8").decode(buffer),
+    truncated: capture.truncated,
+  };
 }
 
 /**
@@ -172,8 +231,13 @@ async function readBoundedStream(
  * `options.timeout`, when set, kills the process once it expires rather than
  * letting the run hang: Bun's `.kill()` still lets `proc.exited` resolve
  * (observed exit code 143) and the stdout/stderr streams still yield
- * whatever was written before the kill — nothing here needs to race against
- * a hang. `options.captureLimit` (default DEFAULT_CAPTURE_LIMIT) bounds each
+ * whatever was written before the kill. A timeout of 0 is a real deadline of
+ * zero milliseconds — the child is killed at once — not a synonym for
+ * "unset"; callers meaning "no limit" leave `timeout` undefined. The wait on
+ * stdout/stderr reaching EOF is itself bounded after the child exits (see
+ * STREAM_DRAIN_GRACE_PERIOD_MS), because a detached grandchild holding the
+ * inherited pipes open would otherwise outlast the timeout entirely.
+ * `options.captureLimit` (default DEFAULT_CAPTURE_LIMIT) bounds each
  * stream independently; a stream that hits its limit is truncated with an
  * explicit marker and reported via `truncated: true`.
  */
@@ -225,9 +289,21 @@ async function spawnWithBun(
     }
   }
 
+  // Started before anything is awaited: a child writing more than one pipe
+  // buffer's worth of output blocks until a reader consumes it, so these
+  // must already be draining while `proc.exited` is awaited below.
+  const stdoutRead = startBoundedRead(proc.stdout, captureLimit);
+  const stderrRead = startBoundedRead(proc.stderr, captureLimit);
+  const reads = Promise.all([stdoutRead.done, stderrRead.done]);
+  // Separate, always-handled branch: on the abandoned-drain path nothing
+  // awaits `reads` any more, and a late failure there must not surface as an
+  // unhandled rejection. The branch awaited below still propagates normally.
+  reads.catch(() => {});
+
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
   if (typeof options?.timeout === "number") {
     timer = setTimeout(() => {
       timedOut = true;
@@ -246,18 +322,39 @@ async function spawnWithBun(
     }, options.timeout);
   }
 
-  const [stdoutResult, stderrResult, exitCode] = await Promise.all([
-    readBoundedStream(proc.stdout, captureLimit),
-    readBoundedStream(proc.stderr, captureLimit),
-    proc.exited,
-  ]);
+  let exitCode: number;
+  try {
+    exitCode = await proc.exited;
 
-  if (timer) {
+    // The child is gone, but its pipes are not necessarily closed — a
+    // detached grandchild can still hold the write ends open indefinitely,
+    // so waiting for EOF here is waiting on something the timeout has no
+    // control over. Bound that wait: past the grace period, cancel the
+    // reads and report what was already captured.
+    const drained = await Promise.race([
+      reads.then(() => true),
+      new Promise<boolean>((resolve) => {
+        drainTimer = setTimeout(
+          () => resolve(false),
+          STREAM_DRAIN_GRACE_PERIOD_MS,
+        );
+      }),
+    ]);
+    if (!drained) {
+      stdoutRead.cancel();
+      stderrRead.cancel();
+    }
+  } finally {
+    // In a finally so that a rejected stream read (or exit) can never leak
+    // the kill/escalation timers, which would otherwise fire against a
+    // process that is already reaped.
     clearTimeout(timer);
-  }
-  if (graceTimer) {
     clearTimeout(graceTimer);
+    clearTimeout(drainTimer);
   }
+
+  const stdoutResult = finalizeCapture(stdoutRead.capture);
+  const stderrResult = finalizeCapture(stderrRead.capture);
 
   const stdout = stdoutResult.truncated
     ? stdoutResult.text + TRUNCATION_MARKER

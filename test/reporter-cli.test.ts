@@ -84,9 +84,24 @@ describe.each(
       stdout: "build output here",
       stderr: "warning: deprecated flag",
     });
-    expect(output).toContain("7");
+    // Asserted as the full rendered line, not a bare "7": the fixture's own
+    // message text also contains a 7, so a bare-substring assertion stays
+    // green even if the exit-code line is deleted outright.
+    expect(output).toContain("Exit code: 7");
     expect(output).toContain("build output here");
     expect(output).toContain("warning: deprecated flag");
+  });
+
+  it("renders the exit-code line for exit code 0 when the message itself contains no digits", () => {
+    const output = render({
+      message: "stdout_contains assertion failed",
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    });
+    // No digit appears anywhere in this fixture except the exit code
+    // itself, so this can only pass if the exit-code line really renders.
+    expect(output).toContain("Exit code: 0");
   });
 
   it("shows the truncation marker when the excerpt was already truncated upstream", () => {
@@ -119,6 +134,46 @@ describe.each(
       stderr: "",
     });
     expect(output.toLowerCase()).not.toContain("working directory");
+  });
+
+  it("prints the kept working directory for a spawn failure, which has a workdir but no exit code", () => {
+    // A command that cannot be spawned never produces an exit code, but the
+    // runner still calls dispose(false) — the directory IS kept on disk, so
+    // its path has to be printed or the user can never find it.
+    const output = render({
+      message: "spawn flowspec-not-a-real-binary ENOENT",
+      step: 0,
+      action: { run: "flowspec-not-a-real-binary" },
+      workdir: "/tmp/flowspec-kept-spawnfail",
+    });
+    expect(output.toLowerCase()).toContain("working directory");
+    expect(output).toContain("/tmp/flowspec-kept-spawnfail");
+  });
+});
+
+describe.each(
+  RENDERERS,
+)("%s: multi-line field indentation", (_name, render) => {
+  it("indents every line of a multi-line stdout/stderr value, not just its first", () => {
+    const output = render({
+      message: "stdout_contains assertion failed",
+      exitCode: 1,
+      stdout: "out line one\nout line two\nout line three",
+      stderr: "err line one\nerr line two",
+    });
+
+    const continuationLines = [
+      "out line two",
+      "out line three",
+      "err line two",
+    ];
+    for (const text of continuationLines) {
+      const physicalLine = output
+        .split("\n")
+        .find((line) => line.includes(text));
+      expect(physicalLine).toBeDefined();
+      expect(physicalLine?.startsWith("  ")).toBe(true);
+    }
   });
 });
 

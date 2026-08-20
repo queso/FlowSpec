@@ -49,32 +49,59 @@ function formatAction(action: StepAction | CliStep): string {
 }
 
 /**
+ * The indent every continuation line of the failure report carries. Both
+ * entry points below indent by this much, so a multi-line field's own
+ * embedded newlines have to be re-indented to the same depth.
+ */
+const REPORT_INDENT = "  ";
+
+/**
+ * Re-indent every line of a possibly multi-line value so it lines up under
+ * its label. Without this, only the FIRST physical line of a captured
+ * stdout/stderr renders indented and the rest run flush against the left
+ * margin, visually escaping the failure block they belong to.
+ */
+function indentLines(text: string, indent: string): string {
+  return text.split("\n").join(`\n${indent}`);
+}
+
+/**
  * Build the CLI-specific failure lines (exit code, bounded stdout/stderr
  * excerpts, and — when present — the kept working directory) shared by
  * formatError and formatResult, so the two entry points can never drift out
  * of sync with each other.
  *
- * Gated on `error.exitCode !== undefined`: that field's presence alone
- * signals a CLI failure (a web failure never sets it) — independent of
- * whether `step`/`action` are also present, since an assertion failure
- * (this item's main concern) doesn't carry a step index the way an
- * action-step failure does. stdout/stderr are rendered as-is: they're
- * already bounded/truncated upstream (src/cli-assertions.ts), so a
- * truncation marker baked in there is preserved verbatim, never re-cut here.
- * `workdir` gets its own line only when present — a configured cwd (the
- * user's own directory) never sets it, so nothing "working directory"-shaped
- * is printed for that case.
+ * The two groups gate INDEPENDENTLY, because they answer to different
+ * fields:
+ *
+ * - exitCode/stdout/stderr gate on `error.exitCode !== undefined`: that
+ *   field's presence alone signals a completed CLI process (a web failure
+ *   never sets it) — independent of whether `step`/`action` are also
+ *   present, since an assertion failure doesn't carry a step index the way
+ *   an action-step failure does. stdout/stderr are rendered as-is apart
+ *   from re-indentation: they're already bounded/truncated upstream
+ *   (src/matchers.ts's boundedExcerpt, applied by both the assertion and
+ *   step-failure paths), so a truncation marker baked in there is preserved
+ *   verbatim, never re-cut here.
+ *
+ * - The workdir line gates on `error.workdir !== undefined` ALONE. A spawn
+ *   failure (command not found) never produces an exit code, but its
+ *   working directory is genuinely kept on disk (dispose(false) still ran),
+ *   so folding it into the exitCode gate would mean the kept directory's
+ *   path is never printed and the user can't find it. A configured cwd (the
+ *   user's own directory) never sets `workdir`, so nothing "working
+ *   directory"-shaped is printed for that case either way.
  */
 function formatCliFailureLines(error: FlowError): string[] {
-  if (error.exitCode === undefined) {
-    return [];
-  }
+  const lines: string[] = [];
 
-  const lines = [
-    `Exit code: ${error.exitCode}`,
-    `stdout: ${error.stdout ?? ""}`,
-    `stderr: ${error.stderr ?? ""}`,
-  ];
+  if (error.exitCode !== undefined) {
+    lines.push(
+      `Exit code: ${error.exitCode}`,
+      `stdout: ${indentLines(error.stdout ?? "", REPORT_INDENT)}`,
+      `stderr: ${indentLines(error.stderr ?? "", REPORT_INDENT)}`,
+    );
+  }
 
   if (error.workdir !== undefined) {
     lines.push(`Kept working directory: ${error.workdir}`);
@@ -96,10 +123,10 @@ export function formatError(error: FlowError): string {
     parts.push(`${stepLabel} ${error.step}: ${formatAction(error.action)}`);
   }
 
-  parts.push(`Error: ${error.message}`);
+  parts.push(`Error: ${indentLines(error.message, REPORT_INDENT)}`);
   parts.push(...formatCliFailureLines(error));
 
-  return parts.join("\n  ");
+  return parts.join(`\n${REPORT_INDENT}`);
 }
 
 /**
@@ -126,12 +153,14 @@ export function formatResult(result: FlowResult): string {
     if (result.error.step !== undefined && result.error.action) {
       const stepLabel = result.error.phase === "setup" ? "Setup step" : "Step";
       lines.push(
-        `  ${stepLabel} ${result.error.step}: ${formatAction(result.error.action)}`,
+        `${REPORT_INDENT}${stepLabel} ${result.error.step}: ${formatAction(result.error.action)}`,
       );
     }
-    lines.push(`  Error: ${result.error.message}`);
+    lines.push(
+      `${REPORT_INDENT}Error: ${indentLines(result.error.message, REPORT_INDENT)}`,
+    );
     for (const cliLine of formatCliFailureLines(result.error)) {
-      lines.push(`  ${cliLine}`);
+      lines.push(`${REPORT_INDENT}${cliLine}`);
     }
   }
 

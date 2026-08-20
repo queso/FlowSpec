@@ -63,7 +63,10 @@ function cliFlow(overrides: Record<string, unknown> = {}) {
     description: "A cli flow",
     surface: "cli",
     steps: [{ run: "flowspec init" }],
-    expect: [],
+    // Non-empty since the post-mission sweep (fix S7): a CLI flow's expect
+    // list must hold at least one assertion. Every test below overrides it
+    // anyway; this default just keeps the fixture itself legal.
+    expect: [{ exit_code: 0 }],
     ...overrides,
   };
 }

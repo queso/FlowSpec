@@ -21,8 +21,10 @@ import { FlowSpecSchema } from "../src/types";
  *    stdout_contains, etc. — see test/types-cli-assertions.test.ts), so
  *    "any entry rejected" is no longer literally true; what's still true,
  *    and still this file's concern, is that a WEB-shaped assertion is
- *    never valid in a CLI flow. The web `expect` minimum of at least one
- *    assertion is unchanged.
+ *    never valid in a CLI flow. The post-mission sweep (fix S7) then
+ *    extended the web surface's "at least one assertion" floor to the CLI
+ *    surface too, so `expect: []` is now rejected on BOTH surfaces — the
+ *    fixtures below carry a real assertion for that reason.
  */
 
 function issueMessages(
@@ -49,7 +51,10 @@ function cliFlow(overrides: Record<string, unknown> = {}) {
     description: "A cli flow",
     surface: "cli",
     steps: [{ run: "flowspec init" }],
-    expect: [],
+    // Non-empty since the post-mission sweep (fix S7): a CLI flow's expect
+    // list must hold at least one assertion, exactly as a web flow's always
+    // has. See the "surface: cli assertion list" block below.
+    expect: [{ exit_code: 0 }],
     ...overrides,
   };
 }
@@ -227,11 +232,26 @@ describe("surface: cli flow setup block", () => {
 });
 
 describe("surface: cli assertion list", () => {
-  it("parses a cli flow with an empty expect list", () => {
+  it("rejects a cli flow with an empty expect list", () => {
+    // Inverted by the post-mission sweep (fix S7). WI-800 landed while the
+    // CLI assertion vocabulary was still empty, so `expect: []` was the only
+    // legal CLI expect list and this test pinned that. WI-805 filled the
+    // vocabulary in but never applied the web surface's existing `min(1)`
+    // floor to the CLI surface, leaving a CLI flow able to parse — and then
+    // report green — while asserting nothing at all. See
+    // test/types-cli-assertion-strictness.test.ts for the full contract.
     const result = FlowSpecSchema.safeParse(cliFlow({ expect: [] }));
+    expect(result.success).toBe(false);
+    expect(issueMessages(result)).toContain("at least one assertion");
+  });
+
+  it("parses a cli flow whose expect list holds a CLI assertion", () => {
+    const result = FlowSpecSchema.safeParse(
+      cliFlow({ expect: [{ exit_code: 0 }] }),
+    );
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.expect).toEqual([]);
+      expect(result.data.expect).toEqual([{ exit_code: 0 }]);
     }
   });
 

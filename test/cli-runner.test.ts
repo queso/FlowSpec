@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { runCliFlow } from "../src/cli-runner";
-import type { FlowSpec } from "../src/types";
+import { EXCERPT_LIMIT } from "../src/matchers";
+import type { CliFlowSpec } from "../src/types";
 
 /**
  * Tests for WI-808: the CLI execution core — runs a `surface: cli` flow's
@@ -18,7 +19,9 @@ import type { FlowSpec } from "../src/types";
  *
  * Contract pinned by the work item:
  *  - runCliFlow(flow: FlowSpec, options?): Promise<FlowResult>, options
- *    carrying { cwd?, timeout?, captureLimit? } (the merged config shape).
+ *    carrying { cwd?, timeout?, stepTimeout?, captureLimit? } (the merged
+ *    config shape; stepTimeout was split out of timeout by the
+ *    post-mission sweep, see test/cli-step-timeout.test.ts).
  *  - Phases in order: create workdir (src/workdir.ts) -> setup (present,
  *    no-op until a later item fills it in) -> steps (this item) ->
  *    assertion hook (a later item plugs in; every fixture here uses
@@ -38,10 +41,12 @@ import type { FlowSpec } from "../src/types";
  * keeps the directory and reports its path) — cleaned up manually in
  * `afterEach` since a kept directory is not this suite's to leave behind.
  *
- * Every fixture uses `expect: []` (parses today per WI-805 — CLI flows
- * with zero assertions have nothing to evaluate) so these tests exercise
- * ONLY the steps phase this item implements, independent of whichever
- * item wires the assertion-evaluation hook.
+ * Every fixture uses `expect: []` so these tests exercise ONLY the steps
+ * phase this item implements, independent of whichever item wires the
+ * assertion-evaluation hook. These fixtures are built in code rather than
+ * parsed, so they bypass FlowSpecSchema — which, since the post-mission
+ * sweep (fix S7), requires a real CLI flow to declare at least one
+ * assertion. An empty list here just makes the assertion loop a no-op.
  */
 
 const execPath = process.execPath;
@@ -71,7 +76,7 @@ function keepFailedWorkdir(result: { error?: { workdir?: string } }): string {
 function cliFlow(
   steps: Record<string, unknown>[],
   overrides: Record<string, unknown> = {},
-): FlowSpec {
+): CliFlowSpec {
   return {
     name: "cli-flow",
     description: "A cli flow",
@@ -79,7 +84,7 @@ function cliFlow(
     steps,
     expect: [],
     ...overrides,
-  } as unknown as FlowSpec;
+  } as unknown as CliFlowSpec;
 }
 
 describe("step execution: order, env, stdin, argv fidelity", () => {
@@ -230,6 +235,94 @@ describe("fail-fast: non-final step, no expect_exit", () => {
   });
 });
 
+describe("step-failure output is bounded the same way assertion-failure output is", () => {
+  // The excerpt bound the assertion path already applies (src/matchers.ts's
+  // EXCERPT_LIMIT) has to apply here too: without it a failing step dumps
+  // its entire captured stream — up to the multi-megabyte per-stream
+  // capture cap — straight to the terminal.
+  const MAX_EXCERPT = EXCERPT_LIMIT + "[truncated]".length;
+
+  it("bounds a failing step's stdout and stderr to an excerpt", async () => {
+    const flow = cliFlow([
+      {
+        run: [
+          execPath,
+          "-e",
+          `process.stdout.write('o'.repeat(${EXCERPT_LIMIT * 20}));process.stderr.write('e'.repeat(${EXCERPT_LIMIT * 20}));process.exit(1)`,
+        ],
+      },
+      { run: [execPath, "-e", "process.exit(0)"] },
+    ]);
+
+    const result = await runCliFlow(flow, {});
+
+    expect(result.success).toBe(false);
+    expect(result.error?.stdout?.length).toBeLessThanOrEqual(MAX_EXCERPT);
+    expect(result.error?.stderr?.length).toBeLessThanOrEqual(MAX_EXCERPT);
+    keepFailedWorkdir(result);
+  });
+
+  it("bounds stdout and stderr on an expect_exit mismatch too", async () => {
+    const flow = cliFlow([
+      {
+        run: [
+          execPath,
+          "-e",
+          `process.stdout.write('o'.repeat(${EXCERPT_LIMIT * 20}));process.exit(2)`,
+        ],
+        expect_exit: 1,
+      },
+    ]);
+
+    const result = await runCliFlow(flow, {});
+
+    expect(result.success).toBe(false);
+    expect(result.error?.exitCode).toBe(2);
+    expect(result.error?.stdout?.length).toBeLessThanOrEqual(MAX_EXCERPT);
+    keepFailedWorkdir(result);
+  });
+
+  it("bounds the stderr interpolated into a timeout failure's message", async () => {
+    const flow = cliFlow([
+      {
+        run: [
+          execPath,
+          "-e",
+          `process.stderr.write('e'.repeat(${EXCERPT_LIMIT * 20}));setTimeout(()=>{},10000)`,
+        ],
+        timeout: 500,
+      },
+    ]);
+
+    const result = await runCliFlow(flow, {});
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message.toLowerCase()).toContain("timed out");
+    expect(result.error?.message.length).toBeLessThanOrEqual(MAX_EXCERPT + 200);
+    expect(result.error?.stderr?.length).toBeLessThanOrEqual(MAX_EXCERPT);
+    keepFailedWorkdir(result);
+  });
+
+  it("leaves output already under the excerpt limit untouched", async () => {
+    const flow = cliFlow([
+      {
+        run: [
+          execPath,
+          "-e",
+          "process.stderr.write('boom from step0');process.exit(1)",
+        ],
+      },
+      { run: [execPath, "-e", "process.exit(0)"] },
+    ]);
+
+    const result = await runCliFlow(flow, {});
+
+    expect(result.success).toBe(false);
+    expect(result.error?.stderr).toBe("boom from step0");
+    keepFailedWorkdir(result);
+  });
+});
+
 describe("fail-fast: non-final step with expect_exit", () => {
   it("continues the chain when the exit code matches expect_exit", async () => {
     const cwd = ownedTempDir();
@@ -329,12 +422,17 @@ describe("timeout and spawn failure stop the flow before assertions", () => {
     expect(existsSync(join(workdir, "should-not-exist.txt"))).toBe(false);
   });
 
-  it("honors options.timeout as the fallback when a step declares no timeout of its own", async () => {
+  it("honors options.stepTimeout as the fallback when a step declares no timeout of its own", async () => {
+    // Re-pointed at `stepTimeout` by the post-mission sweep (fix M2). The
+    // fallback contract is unchanged — only the key that carries it. It used
+    // to be `options.timeout`, which is the ASSERTION-RETRY budget: any
+    // command outliving a retry window (an install, a build, a fetch) was
+    // killed and reported as a timeout. See test/cli-step-timeout.test.ts.
     const flow = cliFlow([
       { run: [execPath, "-e", "setTimeout(()=>{},10000)"] },
     ]);
 
-    const result = await runCliFlow(flow, { timeout: 300 });
+    const result = await runCliFlow(flow, { stepTimeout: 300 });
 
     expect(result.success).toBe(false);
     expect(result.error?.message.toLowerCase()).toContain("timed out");

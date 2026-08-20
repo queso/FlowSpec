@@ -173,7 +173,7 @@ describe("runFlow: CLI dispatch happens before any browser/header work", () => {
   });
 });
 
-describe("runFlow: CLI options threading (cwd, timeout, captureLimit)", () => {
+describe("runFlow: CLI options threading (cwd, stepTimeout, captureLimit)", () => {
   it("forwards options.cwd to the CLI runner as the flow's working directory", async () => {
     const cwd = ownedTempDir();
     const flow = cliFlow([
@@ -194,13 +194,17 @@ describe("runFlow: CLI options threading (cwd, timeout, captureLimit)", () => {
     );
   });
 
-  it("forwards options.timeout to the CLI runner as the step timeout fallback", async () => {
+  it("forwards options.stepTimeout to the CLI runner as the step timeout fallback", async () => {
+    // Re-pointed at `stepTimeout` by the post-mission sweep (fix M2): the
+    // process-kill deadline is its own key, distinct from the
+    // assertion-retry budget that `timeout` carries. Threading is what this
+    // asserts, and it still asserts it.
     const flow = cliFlow([
       { run: [execPath, "-e", "setTimeout(()=>{},10000)"] },
     ]);
 
     const start = Date.now();
-    const result = await runFlow(flow, { timeout: 300 });
+    const result = await runFlow(flow, { stepTimeout: 300 });
     const elapsed = Date.now() - start;
 
     expect(result.success).toBe(false);
@@ -338,7 +342,8 @@ description: a cli flow that proves it really ran via a file it writes
 surface: cli
 steps:
   - run: "${execPath} -e require('fs').writeFileSync('really-ran.txt','yes')"
-expect: []
+expect:
+  - exit_code: 0
 `,
       );
 

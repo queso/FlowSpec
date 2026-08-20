@@ -9,6 +9,7 @@ import type {
   StepAction,
   StepAssertion,
 } from "./types.js";
+import { asCliFlow, asWebFlow } from "./types.js";
 
 // Declare minimal Bun types for TypeScript when running in Bun runtime
 declare global {
@@ -36,7 +37,18 @@ declare global {
  */
 export interface RunnerOptions {
   baseUrl?: string;
+  /**
+   * Assertion-retry budget, in milliseconds: how long an assertion keeps
+   * being re-checked before it fails. Never a process deadline — a CLI run
+   * step's kill deadline is `stepTimeout`.
+   */
   timeout?: number;
+  /**
+   * CLI-surface process-kill deadline for a single `run` step, in
+   * milliseconds. Web flows ignore this. Absent falls back to
+   * DEFAULT_STEP_TIMEOUT (src/config.ts), not to `timeout`.
+   */
+  stepTimeout?: number;
   setup?: FlowStep[];
   headers?: Record<string, string>;
   /**
@@ -721,12 +733,20 @@ export async function runFlow(
   // the whole CLI lifecycle (working directory, steps, assertions); the
   // web path below is completely untouched for surface: "web" (or absent).
   if (flow.surface === "cli") {
-    return runCliFlow(flow, {
+    // The one place the surface is decided is the one place the flow is
+    // narrowed to its CLI shape (see asCliFlow) — the CLI runner then works
+    // in CliStep/CliAssertion terms throughout, with no per-use casts.
+    return runCliFlow(asCliFlow(flow), {
       cwd: options?.cwd,
       timeout: options?.timeout,
+      stepTimeout: options?.stepTimeout,
       captureLimit: options?.captureLimit,
     });
   }
+
+  // Everything past the dispatch is the web path, so the flow is narrowed to
+  // the web vocabulary once, here, rather than at each step/assertion use.
+  const webFlow = asWebFlow(flow);
 
   const startTime = Date.now();
   const baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
@@ -781,7 +801,7 @@ export async function runFlow(
     // config/CLI-level one entirely (no merging). An empty array is not
     // nullish, so an explicit `setup: []` on the flow opts out even when
     // options.setup is supplied.
-    const setupSteps = flow.setup ?? options?.setup;
+    const setupSteps = webFlow.setup ?? options?.setup;
 
     // Execute setup steps (if any) in the same browser session, before the
     // flow's own steps, so state established during setup (e.g. an auth
@@ -813,8 +833,8 @@ export async function runFlow(
     }
 
     // Execute all steps
-    for (let stepIndex = 0; stepIndex < flow.steps.length; stepIndex++) {
-      const step = flow.steps[stepIndex];
+    for (let stepIndex = 0; stepIndex < webFlow.steps.length; stepIndex++) {
+      const step = webFlow.steps[stepIndex];
 
       try {
         await executeStep(step, baseUrl, session, timeout, scopedHeaders);
@@ -835,7 +855,7 @@ export async function runFlow(
     }
 
     // Execute all assertions with retry/polling
-    for (const assertion of flow.expect) {
+    for (const assertion of webFlow.expect) {
       const assertionError = await executeAssertion(
         assertion,
         session,

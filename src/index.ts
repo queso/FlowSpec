@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { CONFIG_FILE_NAME, loadConfig, mergeConfig } from "./config.js";
+import {
+  CONFIG_FILE_NAME,
+  DEFAULT_STEP_TIMEOUT,
+  type FlowSpecConfig,
+  loadConfig,
+  mergeConfig,
+} from "./config.js";
 import { formatInitResult, initProject } from "./init.js";
 import { parseFlowFile } from "./parser.js";
 import { formatResult, formatSummary } from "./reporter.js";
@@ -10,11 +16,15 @@ import type { FlowResult, FlowSpec, FlowStep } from "./types.js";
 
 interface CliOptions {
   path?: string;
-  baseUrl?: string;
   timeout?: number;
+  baseUrl?: string;
+  /** CLI-surface process-kill deadline for one run step, in milliseconds. */
+  stepTimeout?: number;
   headers?: Record<string, string>;
   /** First malformed --header argument, if any. */
   headerError?: string;
+  /** First malformed --step-timeout argument, if any. */
+  stepTimeoutError?: string;
   showHelp: boolean;
 }
 
@@ -29,6 +39,10 @@ Commands:
 Run Command Options:
   --base-url <url>  Base URL for relative paths (default from config or http://localhost:3000)
   --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
+  --step-timeout <ms>
+                    Milliseconds a single CLI (surface: cli) run step may
+                    take before its process is killed. Must be a positive
+                    integer (default: ${DEFAULT_STEP_TIMEOUT})
   --header "Name: value"
                     Extra HTTP header to send. Repeatable; overrides the
                     config headers block entirely
@@ -85,6 +99,26 @@ function recordHeaderError(options: CliOptions, message: string): void {
   options.headerError ??= message;
 }
 
+/**
+ * Parse one `--step-timeout <ms>` argument.
+ *
+ * Validated here rather than left to the config schema: mergeConfig applies
+ * CLI values with `??`, so an out-of-range flag value would otherwise sail
+ * past the schema's `.positive()` and reach the spawn primitive intact —
+ * where 0 is a real, zero-millisecond deadline that kills every step the
+ * instant it starts. A bad value is a misconfiguration (exit 2), not a
+ * silently-ignored flag.
+ */
+function parseStepTimeoutArg(arg: string): number | string {
+  const value = Number(arg);
+
+  if (!Number.isInteger(value) || value <= 0) {
+    return `Error: invalid --step-timeout "${arg}" - expected a positive integer number of milliseconds`;
+  }
+
+  return value;
+}
+
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     showHelp: false,
@@ -101,6 +135,21 @@ function parseArgs(args: string[]): CliOptions {
       const timeoutValue = Number.parseInt(args[++i], 10);
       if (!Number.isNaN(timeoutValue)) {
         options.timeout = timeoutValue;
+      }
+    } else if (arg === "--step-timeout") {
+      const rawValue = args[i + 1];
+      if (rawValue === undefined) {
+        options.stepTimeoutError ??=
+          "Error: --step-timeout requires a positive integer number of milliseconds";
+        continue;
+      }
+      i++;
+
+      const parsed = parseStepTimeoutArg(rawValue);
+      if (typeof parsed === "string") {
+        options.stepTimeoutError ??= parsed;
+      } else {
+        options.stepTimeout = parsed;
       }
     } else if (arg === "--header") {
       const headerArg = args[i + 1];
@@ -183,28 +232,29 @@ function parseFlowFiles(filePaths: string[]): {
   return { flows, errors };
 }
 
+/**
+ * Takes the merged config as one object rather than a long positional list:
+ * several of its fields are same-typed millisecond numbers (`timeout` is the
+ * assertion-retry budget, `stepTimeout` the CLI process-kill deadline) and
+ * transposing two of those at a call site would be silent.
+ */
 async function runFlows(
   parsedFlows: ParsedFlow[],
-  baseUrl: string,
-  timeout: number | undefined,
-  configSetup: FlowStep[] | undefined,
-  configHeaders: Record<string, string> | undefined,
-  configHeadersScope: "origin" | "all" | undefined,
-  configCwd: string | undefined,
-  configCaptureLimit: number | undefined,
+  config: FlowSpecConfig,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
 
   for (let i = 0; i < parsedFlows.length; i++) {
     const { flow } = parsedFlows[i];
     const result = await runFlow(flow, {
-      baseUrl,
-      timeout,
-      setup: configSetup,
-      headers: configHeaders,
-      headersScope: configHeadersScope,
-      cwd: configCwd,
-      captureLimit: configCaptureLimit,
+      baseUrl: config.baseUrl,
+      timeout: config.timeout,
+      stepTimeout: config.stepTimeout,
+      setup: config.setup as FlowStep[] | undefined,
+      headers: config.headers,
+      headersScope: config.headersScope,
+      cwd: config.cwd,
+      captureLimit: config.captureLimit,
     });
     console.log(formatResult(result));
     results.push(result);
@@ -297,11 +347,13 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(0);
   }
 
-  // A malformed --header is a misconfiguration, not a flow failure: exit 2
-  // before any flow parses and before any browser session opens, exactly as
-  // an invalid config file does.
-  if (options.headerError) {
-    console.error(options.headerError);
+  // A malformed --header or --step-timeout is a misconfiguration, not a flow
+  // failure: exit 2 before any flow parses, before any browser session opens
+  // and before any command is spawned, exactly as an invalid config file
+  // does.
+  const flagError = options.headerError ?? options.stepTimeoutError;
+  if (flagError) {
+    console.error(flagError);
     process.exit(2);
   }
 
@@ -328,6 +380,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
     mergedConfig = mergeConfig(config, {
       baseUrl: options.baseUrl,
       timeout: options.timeout,
+      stepTimeout: options.stepTimeout,
       headers: options.headers,
     });
   } catch (error) {
@@ -355,16 +408,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
   }
 
   // Run all flows
-  const results = await runFlows(
-    flows,
-    mergedConfig.baseUrl,
-    mergedConfig.timeout,
-    mergedConfig.setup,
-    mergedConfig.headers,
-    mergedConfig.headersScope,
-    mergedConfig.cwd,
-    mergedConfig.captureLimit,
-  );
+  const results = await runFlows(flows, mergedConfig);
 
   // Print summary
   console.log();

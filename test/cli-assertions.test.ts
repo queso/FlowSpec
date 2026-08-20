@@ -1,4 +1,10 @@
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -405,6 +411,130 @@ describe("file_contains", () => {
 
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+describe("file assertion paths are confined to the workdir", () => {
+  // The per-flow temp workdir is the whole point of CLI isolation: a path
+  // that resolves outside it must be REJECTED as out-of-bounds, not
+  // silently answered by whatever happens to exist elsewhere on disk.
+  it("rejects an absolute file_exists path pointing outside the workdir, even though that path exists", async () => {
+    const workdir = makeTempDir();
+    const outside = makeTempDir();
+    const outsidePath = join(outside, "real-file.txt");
+    writeFileSync(outsidePath, "this really does exist");
+
+    const result = await evaluateCliAssertion(
+      { file_exists: outsidePath },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(outsidePath);
+    expect(result?.message).toContain(workdir);
+    expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
+  it("rejects a ../ traversal file_exists path, even though the traversed-to directory exists", async () => {
+    const workdir = makeTempDir();
+
+    const result = await evaluateCliAssertion(
+      { file_exists: "../" },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
+  it("rejects an absolute file_contains path pointing outside the workdir", async () => {
+    const workdir = makeTempDir();
+    const outside = makeTempDir();
+    const outsidePath = join(outside, "real-file.txt");
+    writeFileSync(outsidePath, "the needle is here");
+
+    const result = await evaluateCliAssertion(
+      { file_contains: { path: outsidePath, text: "needle" } },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(outsidePath);
+    expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
+  it("rejects a ../ traversal file_contains path that would otherwise match", async () => {
+    const workdir = makeTempDir();
+    const parentFile = join(workdir, "..", "flowspec-traversal-target.txt");
+    writeFileSync(parentFile, "the needle is here");
+    try {
+      const result = await evaluateCliAssertion(
+        {
+          file_contains: {
+            path: "../flowspec-traversal-target.txt",
+            text: "needle",
+          },
+        },
+        lastStep(),
+        workdir,
+        0,
+      );
+
+      expect(result).toBeDefined();
+      expect(result?.message.toLowerCase()).toContain("outside");
+    } finally {
+      rmSync(parentFile, { force: true });
+    }
+  });
+
+  it("still accepts a nested relative path that stays inside the workdir", async () => {
+    const workdir = makeTempDir();
+    mkdirSync(join(workdir, "nested"));
+    writeFileSync(join(workdir, "nested", "output.txt"), "the needle is here");
+
+    expect(
+      await evaluateCliAssertion(
+        { file_exists: "nested/output.txt" },
+        lastStep(),
+        workdir,
+        0,
+      ),
+    ).toBeUndefined();
+    expect(
+      await evaluateCliAssertion(
+        { file_contains: { path: "nested/output.txt", text: "needle" } },
+        lastStep(),
+        workdir,
+        0,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("does not reject a sibling directory whose name merely shares the workdir's prefix", async () => {
+    // Guards the naive `resolved.startsWith(workdir)` prefix check:
+    // "/tmp/wd-extra/x" starts with "/tmp/wd" as a string but is NOT under
+    // it as a path.
+    const workdir = makeTempDir();
+    const sibling = `${workdir}-extra`;
+    mkdirSync(sibling);
+    tempDirs.push(sibling);
+    writeFileSync(join(sibling, "output.txt"), "content");
+
+    const result = await evaluateCliAssertion(
+      { file_exists: join(sibling, "output.txt") },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message.toLowerCase()).toContain("outside");
   });
 });
 

@@ -23,19 +23,25 @@
  */
 
 import { evaluateCliAssertion } from "./cli-assertions.js";
+import { DEFAULT_STEP_TIMEOUT } from "./config.js";
 import { spawnProcess } from "./exec.js";
-import type {
-  CliAssertion,
-  CliStep,
-  FlowError,
-  FlowResult,
-  FlowSpec,
-} from "./types.js";
+import { boundedExcerpt } from "./matchers.js";
+import type { CliFlowSpec, CliStep, FlowError, FlowResult } from "./types.js";
 import { createFlowWorkdir } from "./workdir.js";
 
 export interface CliRunOptions {
   cwd?: string;
+  /**
+   * Assertion-retry budget, in milliseconds — how long the file assertions
+   * keep re-checking. NOT a process deadline: a step is never killed for
+   * outliving this.
+   */
   timeout?: number;
+  /**
+   * Process-kill deadline for a single run step, in milliseconds. A step's
+   * own `timeout` wins over it; absent, DEFAULT_STEP_TIMEOUT applies.
+   */
+  stepTimeout?: number;
   captureLimit?: number;
 }
 
@@ -53,7 +59,17 @@ function buildArgv(run: string | string[]): string[] {
   return run.split(/\s+/).filter((token) => token.length > 0);
 }
 
-/** Build the CLI FlowError fields (WI-805's shape) shared by every step-phase failure. */
+/**
+ * Build the CLI FlowError fields (WI-805's shape) shared by every step-phase
+ * failure.
+ *
+ * stdout/stderr are bounded through src/matchers.ts's boundedExcerpt — the
+ * same helper the assertion path uses (src/cli-assertions.ts) — so a failing
+ * STEP reports output bounded exactly like a failing ASSERTION does. The
+ * per-stream capture cap in src/exec.ts is megabytes wide and is about not
+ * exhausting memory, not about what's readable in a terminal; without this
+ * a single failing step would dump its entire captured stream to the user.
+ */
 function stepFailure(
   message: string,
   step: CliStep,
@@ -71,8 +87,8 @@ function stepFailure(
     ...(execResult
       ? {
           exitCode: execResult.exitCode,
-          stdout: execResult.stdout,
-          stderr: execResult.stderr,
+          stdout: boundedExcerpt(execResult.stdout),
+          stderr: boundedExcerpt(execResult.stderr),
         }
       : {}),
   };
@@ -110,7 +126,11 @@ async function executeStep(
       cwd: workdirPath,
       env: step.env,
       stdin: step.stdin,
-      timeout: step.timeout ?? options?.timeout,
+      // The process deadline, in precedence order: the step's own timeout,
+      // the run-wide stepTimeout, then the realistic default. Deliberately
+      // NOT options.timeout — that is the assertion-retry budget, and using
+      // it here killed any command that outlived a retry window.
+      timeout: step.timeout ?? options?.stepTimeout ?? DEFAULT_STEP_TIMEOUT,
       captureLimit: options?.captureLimit,
     });
   } catch (error: unknown) {
@@ -125,7 +145,10 @@ async function executeStep(
     return {
       ok: false,
       error: stepFailure(
-        `${label} ${index} timed out: ${execResult.stderr}`,
+        // Bounded for the same reason stepFailure bounds the fields it
+        // attaches: a timed-out command's stderr is often its largest
+        // output, and it lands in the message a user reads first.
+        `${label} ${index} timed out: ${boundedExcerpt(execResult.stderr)}`,
         step,
         index,
         workdirPath,
@@ -162,7 +185,7 @@ async function executeStep(
  * managing the flow's working directory lifecycle around them.
  */
 export async function runCliFlow(
-  flow: FlowSpec,
+  flow: CliFlowSpec,
   options?: CliRunOptions,
 ): Promise<FlowResult> {
   const startTime = Date.now();
@@ -185,7 +208,7 @@ export async function runCliFlow(
   // rule; there is no "final step is assertion territory" concept here.
   // Failures are phase: "setup" with the setup step's own local index.
   if (flow.setup && flow.setup.length > 0) {
-    const setupSteps = flow.setup as CliStep[];
+    const setupSteps = flow.setup;
     for (let setupIndex = 0; setupIndex < setupSteps.length; setupIndex++) {
       const outcome = await executeStep(
         setupSteps[setupIndex],
@@ -201,7 +224,7 @@ export async function runCliFlow(
     }
   }
 
-  const steps = (flow.steps ?? []) as CliStep[];
+  const steps = flow.steps ?? [];
 
   // Only the LAST run step's result is kept available past its own
   // iteration — intermediate steps' output is deliberately unaddressable
@@ -234,11 +257,11 @@ export async function runCliFlow(
   }
 
   // Assertion phase: evaluate flow.expect in order against the last step's
-  // captured result, stopping at the first failure. Every fixture in
-  // WI-808/811's own test suites uses expect: [], which has nothing to
-  // evaluate (the loop below is simply a no-op for them).
+  // captured result, stopping at the first failure. A schema-validated CLI
+  // flow always has at least one assertion; a hand-built fixture with none
+  // simply makes this loop a no-op.
   if (lastExecResult) {
-    for (const assertion of (flow.expect ?? []) as CliAssertion[]) {
+    for (const assertion of flow.expect ?? []) {
       const failure = await evaluateCliAssertion(
         assertion,
         lastExecResult,

@@ -11,9 +11,41 @@
  * evaluation — no polling loop is entered at all.
  */
 
-import { access, readFile } from "node:fs/promises";
+import { access, open } from "node:fs/promises";
+import { DEFAULT_CAPTURE_LIMIT } from "./exec.js";
 import { type MatchFailure, matchContains } from "./matchers.js";
 import { POLL_INTERVAL } from "./runner.js";
+
+/**
+ * Upper bound on how much of a file fileContains reads, reusing the same
+ * per-stream cap src/exec.ts applies to captured stdout/stderr rather than
+ * introducing a second, unrelated number. This matters because the check
+ * re-reads from disk on EVERY poll tick (once per POLL_INTERVAL for the
+ * whole timeout window): an unbounded readFile would pull an arbitrarily
+ * large file fully into memory, repeatedly.
+ */
+const FILE_READ_LIMIT = DEFAULT_CAPTURE_LIMIT;
+
+/**
+ * Read at most FILE_READ_LIMIT bytes from the head of a file. Allocates
+ * against the file's actual size when it is smaller than the cap, so the
+ * common small-file case doesn't pay for the cap.
+ */
+async function readBoundedFile(absolutePath: string): Promise<string> {
+  const handle = await open(absolutePath, "r");
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(Number(size), FILE_READ_LIMIT);
+    if (length <= 0) {
+      return "";
+    }
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, 0);
+    return buffer.subarray(0, bytesRead).toString("utf-8");
+  } finally {
+    await handle.close();
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,7 +105,7 @@ async function checkFileContains(
 ): Promise<MatchFailure | undefined> {
   let content: string;
   try {
-    content = await readFile(absolutePath, "utf-8");
+    content = await readBoundedFile(absolutePath);
   } catch {
     return {
       message: `Expected file at ${absolutePath} to contain "${expected}" but the file was not found`,

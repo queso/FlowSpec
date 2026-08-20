@@ -28,8 +28,14 @@ const TRUNCATION_MARKER = "[truncated]";
  * Head-truncate `text` to EXCERPT_LIMIT characters, appending an explicit
  * marker only when truncation actually happened. Text at or under the limit
  * is returned unchanged.
+ *
+ * Exported as the SINGLE source of truth for excerpt bounding: the CLI
+ * assertion dispatcher (src/cli-assertions.ts) and the CLI runner's
+ * step-failure path (src/cli-runner.ts) both call this rather than
+ * reimplementing the limit + marker convention, so a failing step and a
+ * failing assertion can never report output bounded two different ways.
  */
-function excerpt(text: string): string {
+export function boundedExcerpt(text: string): string {
   if (text.length <= EXCERPT_LIMIT) {
     return text;
   }
@@ -53,17 +59,27 @@ export function matchContains(
     return undefined;
   }
   return {
-    message: `Expected text to contain "${needle}" but it was not found. Actual: ${excerpt(haystack)}`,
+    message: `Expected text to contain "${needle}" but it was not found. Actual: ${boundedExcerpt(haystack)}`,
     expected: needle,
     actual: haystack,
   };
 }
 
 /**
- * Passes when `pattern` (compiled as a RegExp) matches `haystack`. Never
- * throws: a pattern that fails to compile is reported as a structured
- * failure rather than propagating the SyntaxError. On failure, the message
- * names the pattern and carries a bounded excerpt of the haystack.
+ * Multiline: the text these patterns run against — CLI stdout/stderr and
+ * file contents — is multi-line by nature, so `^`/`$` anchor per LINE, which
+ * is what a spec author writing `stderr_matches: "^error"` against real
+ * command output means. A no-op for single-line text, where whole-string
+ * anchoring behaves exactly as it did before.
+ */
+const REGEX_FLAGS = "m";
+
+/**
+ * Passes when `pattern` (compiled as a RegExp with REGEX_FLAGS) matches
+ * `haystack`. Never throws: a pattern that fails to compile is reported as a
+ * structured failure rather than propagating the SyntaxError. On failure,
+ * the message names the pattern and carries a bounded excerpt of the
+ * haystack.
  */
 export function matchRegex(
   haystack: string,
@@ -71,11 +87,11 @@ export function matchRegex(
 ): MatchFailure | undefined {
   let regex: RegExp;
   try {
-    regex = new RegExp(pattern);
+    regex = new RegExp(pattern, REGEX_FLAGS);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return {
-      message: `Invalid regex pattern "${pattern}": ${reason}. Actual: ${excerpt(haystack)}`,
+      message: `Invalid regex pattern "${pattern}": ${reason}. Actual: ${boundedExcerpt(haystack)}`,
       expected: pattern,
       actual: haystack,
     };
@@ -86,7 +102,7 @@ export function matchRegex(
   }
 
   return {
-    message: `Expected text to match pattern "${pattern}" but it did not. Actual: ${excerpt(haystack)}`,
+    message: `Expected text to match pattern "${pattern}" but it did not. Actual: ${boundedExcerpt(haystack)}`,
     expected: pattern,
     actual: haystack,
   };
@@ -178,7 +194,7 @@ export function matchJsonPath(
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return {
-      message: `Could not parse JSON: ${reason}. Text: ${excerpt(text)}`,
+      message: `Could not parse JSON: ${reason}. Text: ${boundedExcerpt(text)}`,
     };
   }
 

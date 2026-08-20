@@ -131,6 +131,31 @@ describe("cwd type validation", () => {
       expect((error as Error).message).toContain("cwd");
     }
   });
+
+  // Post-mission sweep fix S6: an empty-string cwd used to pass validation
+  // and then resolve to process.cwd() — the real project directory — so a
+  // config typo silently turned "isolated disposable temp dir" into "run
+  // every CLI step against the real repo, and never clean it up".
+  it.each([
+    ["an explicitly empty cwd", 'cwd: ""\n'],
+    ["a whitespace-only cwd", 'cwd: "   "\n'],
+  ])("rejects %s, naming the field", (_label, contents) => {
+    const configPath = writeConfig(contents);
+
+    expect(() => loadConfigFile(configPath)).toThrow(/invalid configuration/i);
+    try {
+      loadConfigFile(configPath);
+      throw new Error("expected loadConfigFile to throw");
+    } catch (error) {
+      expect((error as Error).message).toContain("cwd");
+    }
+  });
+
+  it("still accepts a non-empty cwd", () => {
+    const configPath = writeConfig("cwd: ./sandbox\n");
+
+    expect(loadConfigFile(configPath).cwd).toBe("./sandbox");
+  });
 });
 
 describe("mergeConfig: cwd and captureLimit pass-through", () => {

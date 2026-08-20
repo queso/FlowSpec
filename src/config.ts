@@ -2,7 +2,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
-import { FlowStepSchema } from "./types.js";
+import { addSchemaFailureIssues, FlowStepSchema } from "./types.js";
+
+/**
+ * Default process-kill deadline for a CLI run step, in milliseconds.
+ *
+ * Deliberately far larger than `timeout` (the assertion-retry budget): these
+ * are two different clocks that used to share one key. A retry budget of ten
+ * seconds is generous; ten seconds as a process deadline kills any real
+ * install, build, or network fetch mid-flight and reports it as a timeout.
+ */
+export const DEFAULT_STEP_TIMEOUT = 60000;
 
 /**
  * The key that names what a raw (not-yet-validated) config-level setup step
@@ -36,44 +46,6 @@ function matchedWebVerb(step: unknown): string | undefined {
 }
 
 /**
- * Re-parse a step whose verb IS a recognized web verb but that otherwise
- * failed FlowStepSchema (an extra key, a wrong value type), and surface the
- * SPECIFIC problem rather than Zod's generic union-failure wrapper.
- *
- * FlowStepSchema is a union of five single-verb strict object schemas. When
- * none of the five match, Zod's default behavior varies by failure shape:
- * an extra-key-only mismatch (verified interactively) happens to surface a
- * direct top-level "Unrecognized key(s)" issue, but a wrong-value-type
- * mismatch surfaces only the generic "invalid_union" wrapper ("Invalid
- * input") at the top level — the useful "Expected string, received number"
- * detail is buried inside `unionErrors[branch].issues[]`, one branch per
- * verb. Since the matched verb is already known here, the one relevant
- * branch (the one that recognizes that verb as its own field, rather than
- * complaining it's an unrecognized key) is picked out directly.
- */
-function describeMalformedWebStep(step: unknown, verb: string): string {
-  const result = FlowStepSchema.safeParse(step);
-  if (result.success) {
-    return "";
-  }
-
-  const [topIssue] = result.error.issues;
-  if (topIssue?.code === "invalid_union") {
-    const matchingBranch = topIssue.unionErrors.find((branchError) =>
-      branchError.issues.some((issue) => issue.path[0] === verb),
-    );
-    if (matchingBranch) {
-      return matchingBranch.issues
-        .filter((issue) => issue.path[0] === verb)
-        .map((issue) => issue.message)
-        .join("; ");
-    }
-  }
-
-  return result.error.issues.map((issue) => issue.message).join("; ");
-}
-
-/**
  * Schema for FlowSpec project configuration
  *
  * `setup`'s field type is deliberately permissive (`z.any()` items) so a
@@ -90,7 +62,21 @@ function describeMalformedWebStep(step: unknown, verb: string): string {
 export const FlowSpecConfigSchema = z
   .object({
     baseUrl: z.string().url().optional().default("http://localhost:3000"),
+    // Assertion-retry budget ONLY: how long an assertion keeps being
+    // re-checked before it is called a failure. Never a process deadline —
+    // see stepTimeout below.
     timeout: z.number().positive().optional().default(10000),
+    // CLI-surface process-kill deadline: how long a single `run` step may
+    // take before its process is killed. A distinct key from `timeout`
+    // because the two answer completely different questions, and sharing one
+    // value meant the (web-harmless) 10s retry budget silently killed any
+    // command that legitimately runs longer.
+    stepTimeout: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .default(DEFAULT_STEP_TIMEOUT),
     specsDir: z.string().optional().default("specs/"),
     setup: z.array(z.any()).optional(),
     // Config-level only: HTTP headers applied to the browser session for
@@ -108,7 +94,19 @@ export const FlowSpecConfigSchema = z
     // against process.cwd() — that resolution, and creating a temp
     // directory when this is absent, is src/workdir.ts's job, not
     // config-loading's.
-    cwd: z.string().optional(),
+    //
+    // Blank values are rejected rather than accepted: an empty (or
+    // whitespace-only) cwd resolves to process.cwd() — the real project
+    // directory — so a typo would quietly turn "isolated, disposable temp
+    // dir" into "run every step against the working tree, and never clean
+    // up". Absent means temp dir; present means a real path.
+    cwd: z
+      .string()
+      .refine((value) => value.trim().length > 0, {
+        message:
+          "cwd must be a non-empty path (omit the key entirely to use a temporary directory)",
+      })
+      .optional(),
     // CLI-surface per-stream capture ceiling, in bytes. No schema-level
     // default: this stays undefined when absent, and DEFAULT_CAPTURE_LIMIT
     // (exported by src/exec.ts) is applied downstream by the consumer that
@@ -134,14 +132,11 @@ export const FlowSpecConfigSchema = z
         return;
       }
 
-      const detail = describeMalformedWebStep(step, verb);
-      if (detail) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["setup", index],
-          message: detail,
-        });
-      }
+      // Shared with src/types.ts's flow-level step validation: each
+      // specific problem is re-issued at its own field (e.g.
+      // "setup.0.visit: Expected string, received number") instead of one
+      // generic union message with the field discarded.
+      addSchemaFailureIssues(FlowStepSchema, step, verb, ["setup", index], ctx);
     });
   });
 
@@ -205,6 +200,7 @@ function interpolateValue(value: unknown, configPath: string): unknown {
 export const DEFAULT_CONFIG: FlowSpecConfig = {
   baseUrl: "http://localhost:3000",
   timeout: 10000,
+  stepTimeout: DEFAULT_STEP_TIMEOUT,
   specsDir: "specs/",
 };
 
@@ -312,12 +308,17 @@ export function mergeConfig(
   cliOptions: {
     baseUrl?: string;
     timeout?: number;
+    stepTimeout?: number;
     headers?: Record<string, string>;
   },
 ): FlowSpecConfig {
   return {
     baseUrl: cliOptions.baseUrl ?? config.baseUrl,
     timeout: cliOptions.timeout ?? config.timeout,
+    // The CLI layer validates its own --step-timeout before this point (see
+    // src/index.ts): `??` would otherwise let a 0 or negative flag value
+    // past the schema's `.positive()` and arm a zero-delay process kill.
+    stepTimeout: cliOptions.stepTimeout ?? config.stepTimeout,
     specsDir: config.specsDir,
     setup: config.setup,
     // CLI --header flags REPLACE the config headers block outright — they are

@@ -107,6 +107,88 @@ describe("timeout", () => {
     );
     expect(result.timedOut).toBe(false);
   });
+
+  it("is not defeated by a backgrounded grandchild that keeps the stdout/stderr pipes open", async () => {
+    // Regression test: SIGTERM-then-SIGKILL escalation kills the DIRECT
+    // child, but a detached grandchild it spawned (here, `sleep 20 &`)
+    // inherits the same stdout/stderr pipes and holds them open for its own
+    // lifetime. Reading those streams to EOF therefore does NOT finish when
+    // the child dies, and an implementation that awaits the reads
+    // unconditionally alongside proc.exited hangs for the grandchild's full
+    // lifetime — verified empirically against the pre-fix code: a 500ms
+    // timeout was still pending 5000ms later, 10x its own deadline. A
+    // correct implementation bounds the post-exit drain and returns
+    // whatever was already buffered, so the timeout is a real deadline.
+    //
+    // The call is raced against the test's own deadline rather than just
+    // having its elapsed time measured: against the buggy code it never
+    // settles at all, which would hang the whole test file instead of
+    // failing this one test.
+    const deadlineMs = 2000;
+    const start = Date.now();
+    const outcome = await Promise.race([
+      spawnProcess(["sh", "-c", "sleep 20 & echo started; sleep 30"], {
+        timeout: 500,
+      }).then((result) => ({ kind: "resolved" as const, result })),
+      new Promise<{ kind: "deadline" }>((resolve) =>
+        setTimeout(() => resolve({ kind: "deadline" }), deadlineMs),
+      ),
+    ]);
+    const elapsed = Date.now() - start;
+
+    expect(outcome.kind).toBe("resolved");
+    expect(elapsed).toBeLessThan(deadlineMs);
+    if (outcome.kind === "resolved") {
+      expect(outcome.result.timedOut).toBe(true);
+      // Output buffered before the drain was abandoned is still reported,
+      // exactly as it is for the ordinary kill case above — bounding the
+      // wait must not mean discarding what was already captured.
+      expect(outcome.result.stdout).toContain("started");
+    }
+  });
+
+  it("returns promptly when the command itself exits but a backgrounded grandchild holds the pipes open", async () => {
+    // The same pipe-inheritance problem without any timeout expiring: `sh`
+    // exits immediately here, so this is a completely successful run whose
+    // streams simply never reach EOF. Pre-fix, this hung indefinitely even
+    // though the command had already succeeded.
+    const deadlineMs = 2000;
+    const outcome = await Promise.race([
+      spawnProcess(["sh", "-c", "sleep 20 & echo started"], {
+        timeout: 10000,
+      }).then((result) => ({ kind: "resolved" as const, result })),
+      new Promise<{ kind: "deadline" }>((resolve) =>
+        setTimeout(() => resolve({ kind: "deadline" }), deadlineMs),
+      ),
+    ]);
+
+    expect(outcome.kind).toBe("resolved");
+    if (outcome.kind === "resolved") {
+      expect(outcome.result.timedOut).toBe(false);
+      expect(outcome.result.exitCode).toBe(0);
+      expect(outcome.result.stdout).toContain("started");
+    }
+  });
+
+  it("treats an explicit timeout of 0 as kill-immediately, not as no-limit", async () => {
+    // Pins the primitive-level semantics of the falsy-but-present value: 0
+    // is a real deadline of zero milliseconds, so the child is killed at
+    // once and timedOut is true. It must NOT be silently treated as
+    // "unset"/no-limit (which would let this 10s sleep run to completion),
+    // and it must not throw. Callers that mean "no limit" leave timeout
+    // undefined; choosing a sane default for an unset/zero config value is
+    // the surface layer's job, not this primitive's.
+    const start = Date.now();
+    const result = await spawnProcess(
+      [process.execPath, "-e", "setTimeout(() => {}, 10000)"],
+      { timeout: 0 },
+    );
+    const elapsed = Date.now() - start;
+
+    expect(result.timedOut).toBe(true);
+    expect(elapsed).toBeLessThan(2000);
+    expect(result.stderr).toContain("timed out after 0ms");
+  });
 });
 
 describe("output capture bounds", () => {

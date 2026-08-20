@@ -95,19 +95,32 @@ function compilesAsRegex(pattern: string): boolean {
   }
 }
 
+/**
+ * Every string-valued assertion payload is non-empty by construction.
+ *
+ * An empty needle, pattern, or path is not a weaker assertion — it is a
+ * vacuous one: `"".includes("")` is true, an empty regex matches every
+ * string, and an empty path resolves to the working directory itself. A spec
+ * carrying one reports green while checking nothing, which is worse than no
+ * assertion at all, so it is rejected at parse time.
+ */
+function nonEmptyString(field: string): z.ZodString {
+  return z.string().min(1, `${field} must not be empty`);
+}
+
 // CLI assertion schemas - each is a distinct object shape, matching the
 // .strict() convention of the web assertion schemas above.
 const ExitCodeAssertionSchema = z
   .object({ exit_code: z.number().int() })
   .strict();
 const StdoutContainsAssertionSchema = z
-  .object({ stdout_contains: z.string() })
+  .object({ stdout_contains: nonEmptyString("stdout_contains") })
   .strict();
 const StderrContainsAssertionSchema = z
-  .object({ stderr_contains: z.string() })
+  .object({ stderr_contains: nonEmptyString("stderr_contains") })
   .strict();
 const FileExistsAssertionSchema = z
-  .object({ file_exists: z.string() })
+  .object({ file_exists: nonEmptyString("file_exists") })
   .strict();
 
 /**
@@ -116,7 +129,7 @@ const FileExistsAssertionSchema = z
  * pattern is a schema-level error naming the pattern, not a runtime crash.
  */
 const StdoutMatchesAssertionSchema = z
-  .object({ stdout_matches: z.string() })
+  .object({ stdout_matches: nonEmptyString("stdout_matches") })
   .strict()
   .refine(
     (value) => compilesAsRegex(value.stdout_matches),
@@ -126,7 +139,7 @@ const StdoutMatchesAssertionSchema = z
   );
 
 const StderrMatchesAssertionSchema = z
-  .object({ stderr_matches: z.string() })
+  .object({ stderr_matches: nonEmptyString("stderr_matches") })
   .strict()
   .refine(
     (value) => compilesAsRegex(value.stderr_matches),
@@ -146,7 +159,10 @@ const StderrMatchesAssertionSchema = z
 const FileContainsAssertionSchema = z
   .object({
     file_contains: z
-      .object({ path: z.string().optional(), text: z.string().optional() })
+      .object({
+        path: nonEmptyString("path").optional(),
+        text: nonEmptyString("text").optional(),
+      })
       .strict()
       .superRefine((value, ctx) => {
         if (value.path === undefined) {
@@ -178,7 +194,7 @@ const FileContainsAssertionSchema = z
 const JsonOutputAssertionSchema = z
   .object({
     json_output: z
-      .object({ path: z.string().optional(), equals: z.unknown() })
+      .object({ path: nonEmptyString("path").optional(), equals: z.unknown() })
       .strict()
       .superRefine((value, ctx) => {
         if (value.path === undefined) {
@@ -308,6 +324,117 @@ function isWebVerbStep(step: unknown): boolean {
 }
 
 /**
+ * One specific problem found in a failed parse: Zod's own message, at the
+ * path (relative to the value that was parsed) where it belongs.
+ */
+interface SchemaIssueDetail {
+  path: (string | number)[];
+  message: string;
+}
+
+/**
+ * Unwrap Zod's generic union wrapper down to the issues that actually say
+ * something.
+ *
+ * A union's top-level issue is always the useless "Invalid input"; the real
+ * detail ("Expected string, received number") lives one level down, in
+ * `unionErrors[branch].issues[]` — one branch per union member. Since the
+ * verb the author was reaching for is already known, the branches that
+ * recognize that verb as a field of their OWN are preferred: every other
+ * branch failed merely because it has no such key at all, and its
+ * "Unrecognized key(s)" complaint describes the schema, not the mistake.
+ * When no branch recognizes the verb (an entirely unrelated shape), every
+ * branch's issues are kept rather than reporting nothing.
+ */
+function flattenIssues(
+  issues: readonly z.ZodIssue[],
+  verb: string,
+): SchemaIssueDetail[] {
+  const details: SchemaIssueDetail[] = [];
+
+  for (const issue of issues) {
+    if (issue.code === z.ZodIssueCode.invalid_union) {
+      const relevant = issue.unionErrors.filter((branch) =>
+        branch.issues.some((branchIssue) => branchIssue.path[0] === verb),
+      );
+      const branches = relevant.length > 0 ? relevant : issue.unionErrors;
+      details.push(
+        ...flattenIssues(
+          branches.flatMap((branch) => branch.issues),
+          verb,
+        ),
+      );
+      continue;
+    }
+
+    details.push({ path: [...issue.path], message: issue.message });
+  }
+
+  return details;
+}
+
+/** Distinct issues only: the same message at the same path is reported once. */
+function detailsFromError(
+  error: z.ZodError,
+  verb: string,
+): SchemaIssueDetail[] {
+  const seen = new Set<string>();
+  return flattenIssues(error.issues, verb).filter((detail) => {
+    const key = `${detail.path.join(".")} ${detail.message}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * Push every specific problem `value` has against `schema` as its own issue,
+ * each located at `basePath` + the field within `value` that carries it — so
+ * two different malformed sub-fields of the same step produce two different,
+ * individually-located errors instead of the identical generic message both
+ * used to get.
+ *
+ * Shared by the flow-level step/assertion validation below and by the
+ * config-level setup validation in src/config.ts, which had the same gap.
+ *
+ * A no-op when `value` actually parses. If a failure somehow yields no
+ * detail at all, Zod's own joined messages are reported at `basePath` rather
+ * than nothing, so a malformed value can never slip through silently.
+ */
+export function addSchemaFailureIssues(
+  schema: z.ZodTypeAny,
+  value: unknown,
+  verb: string,
+  basePath: (string | number)[],
+  ctx: z.RefinementCtx,
+): void {
+  const result = schema.safeParse(value);
+  if (result.success) {
+    return;
+  }
+
+  const details = detailsFromError(result.error, verb);
+  if (details.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: basePath,
+      message: result.error.issues.map((issue) => issue.message).join("; "),
+    });
+    return;
+  }
+
+  for (const detail of details) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...basePath, ...detail.path],
+      message: detail.message,
+    });
+  }
+}
+
+/**
  * Re-validates a single steps/setup entry against the grammar for the flow's
  * resolved surface, pushing a custom issue when it doesn't conform.
  *
@@ -337,14 +464,14 @@ function validateStepForSurface(
   }
 
   const schema = surface === "cli" ? CliStepSchema : FlowStepSchema;
-  const result = schema.safeParse(step);
-  if (!result.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path,
-      message: result.error.issues.map((issue) => issue.message).join("; "),
-    });
-  }
+  // The verb this step was reaching for, checked against the known set
+  // rather than taken as "whatever key came first" — it selects which union
+  // branch's issues actually describe the mistake (see flattenIssues).
+  const verb =
+    surface === "cli"
+      ? "run"
+      : (matchedVerb(step, WEB_STEP_VERBS) ?? stepVerb(step));
+  addSchemaFailureIssues(schema, step, verb, path, ctx);
 }
 
 function validateStepsForSurface(
@@ -414,14 +541,7 @@ function validateAssertionForSurface(
     return;
   }
 
-  const result = schemas[verb].safeParse(assertion);
-  if (!result.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path,
-      message: result.error.issues.map((issue) => issue.message).join("; "),
-    });
-  }
+  addSchemaFailureIssues(schemas[verb], assertion, verb, path, ctx);
 }
 
 function validateExpectForSurface(
@@ -444,22 +564,29 @@ function validateExpectForSurface(
  * `surface` selects the step/assertion grammar: absent or "web" keeps
  * today's browser-driven behavior byte-identical; "cli" switches
  * steps/setup/expect to the CLI vocabulary (run steps, exit_code/
- * stdout_contains/etc. assertions). `steps`/`setup`/`expect` are typed
- * loosely (`any`) at this field level on purpose: real verb/shape
- * enforcement lives in the superRefine below, keyed off the resolved
- * surface, and keeping the field type permissive here avoids narrowing
- * FlowSpec's inferred type in a way that would ripple into runner.ts's
- * existing StepAction/StepAssertion-typed call sites, which this item does
- * not touch.
+ * stdout_contains/etc. assertions).
+ *
+ * `steps`/`setup`/`expect` carry the union of both surfaces' element types.
+ * The element schema is `z.custom` — runtime-permissive, exactly as the
+ * previous `z.any()` was — because the real verb/shape enforcement lives in
+ * the superRefine below, keyed off the resolved surface, and Zod skips a
+ * refinement entirely when the object it wraps already failed to parse.
+ * Binding these fields to a real `z.union([...])` would therefore trade
+ * every specific, surface-aware error message ("Step verb \"click\" is not
+ * valid for surface \"cli\"") for the generic "Invalid input" a union
+ * failure reports. What `z.custom` restores over `z.any()` is the
+ * COMPILE-time guarantee: `FlowSpec["steps"]` is a real union again, not
+ * `any[]`, so a bogus property chain on a step is a type error at every
+ * call site.
  */
 export const FlowSpecSchema = z
   .object({
     name: z.string(),
     description: z.string(),
     surface: SurfaceSchema.optional().default("web"),
-    setup: z.array(z.any()).optional(),
-    steps: z.array(z.any()).min(1),
-    expect: z.array(z.any()),
+    setup: z.array(z.custom<FlowStep | CliStep>()).optional(),
+    steps: z.array(z.custom<FlowStep | CliStep>()).min(1),
+    expect: z.array(z.custom<StepAssertion | CliAssertion>()),
   })
   .superRefine((flow, ctx) => {
     const { surface } = flow;
@@ -469,11 +596,15 @@ export const FlowSpecSchema = z
       validateStepsForSurface(flow.setup, surface, "setup", ctx);
     }
 
-    if (surface === "web" && flow.expect.length === 0) {
+    // Both surfaces: a flow whose expect list is empty asserts nothing, and
+    // its assertion loop passes trivially. The web surface has always
+    // required at least one; the CLI surface needs the same floor for the
+    // same reason.
+    if (flow.expect.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["expect"],
-        message: "expect must contain at least one assertion for surface web",
+        message: `expect must contain at least one assertion for surface ${surface}`,
       });
     } else {
       validateExpectForSurface(flow.expect, surface, ctx);
@@ -481,6 +612,59 @@ export const FlowSpecSchema = z
   });
 
 export type FlowSpec = z.infer<typeof FlowSpecSchema>;
+
+/**
+ * A FlowSpec already known to be CLI-surface: its steps, setup and
+ * assertions are the CLI vocabulary, not the union of both surfaces.
+ *
+ * This is what the CLI runner takes, so it never has to cast its way from
+ * "some step" to "a run step" element by element.
+ */
+export type CliFlowSpec = Omit<
+  FlowSpec,
+  "surface" | "setup" | "steps" | "expect"
+> & {
+  surface: "cli";
+  setup?: CliStep[];
+  steps: CliStep[];
+  expect: CliAssertion[];
+};
+
+/**
+ * A FlowSpec already known to be web-surface: the browser-driven step and
+ * assertion vocabulary, with no CLI members mixed in.
+ */
+export type WebFlowSpec = Omit<
+  FlowSpec,
+  "surface" | "setup" | "steps" | "expect"
+> & {
+  surface: "web";
+  setup?: FlowStep[];
+  steps: FlowStep[];
+  expect: StepAssertion[];
+};
+
+/**
+ * Narrow a flow to one surface's vocabulary, at the ONE place the surface is
+ * dispatched on (src/runner.ts's runFlow).
+ *
+ * FlowSpecSchema's superRefine already rejects, at parse time, any flow
+ * whose steps/setup/expect don't match its declared surface — so for a
+ * parsed flow these restate a guarantee the schema has enforced. They are
+ * assertions rather than predicates because `surface` cannot narrow the
+ * object it sits on (FlowSpec is one object type, not a discriminated
+ * union). Keeping them as two named, documented calls at the dispatch point
+ * means a caller that hand-builds an unvalidated flow has exactly one place
+ * to have gone wrong, instead of an unchecked `as CliStep[]` at every use
+ * site downstream.
+ */
+export function asCliFlow(flow: FlowSpec): CliFlowSpec {
+  return flow as CliFlowSpec;
+}
+
+export function asWebFlow(flow: FlowSpec): WebFlowSpec {
+  return flow as WebFlowSpec;
+}
 
 /**
  * Schema for flow execution errors

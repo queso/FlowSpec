@@ -2,6 +2,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_CAPTURE_LIMIT } from "../src/exec";
 import { fileContains, fileExists } from "../src/file-matchers";
 import { POLL_INTERVAL } from "../src/runner";
 
@@ -134,6 +135,34 @@ describe("fileContains", () => {
 
     expect(result).toBeDefined();
     expect(result?.message).toContain(filePath);
+  });
+});
+
+describe("fileContains: bounded read", () => {
+  it("reads at most DEFAULT_CAPTURE_LIMIT bytes, so content past the cap is not matched", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "oversized.txt");
+    // Filler up to exactly the cap, then a sentinel that lives entirely
+    // beyond it. An unbounded readFile slurps the whole file and matches
+    // the sentinel; a capped read cannot see it.
+    writeFileSync(
+      filePath,
+      `${"f".repeat(DEFAULT_CAPTURE_LIMIT)}PAST_THE_CAP_SENTINEL`,
+    );
+
+    const result = await fileContains(filePath, "PAST_THE_CAP_SENTINEL", 0);
+
+    expect(result).toBeDefined();
+  });
+
+  it("still matches content that falls inside the cap", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "within-cap.txt");
+    writeFileSync(filePath, `${"f".repeat(1024)}INSIDE_THE_CAP`);
+
+    const result = await fileContains(filePath, "INSIDE_THE_CAP", 0);
+
+    expect(result).toBeUndefined();
   });
 });
 

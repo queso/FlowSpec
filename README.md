@@ -92,6 +92,9 @@ flowspec run specs/ --timeout 10000
 # Disable assertion retries (fail immediately)
 flowspec run specs/ --timeout 0
 
+# Give each CLI (surface: cli) run step longer before it is killed
+flowspec run specs/ --step-timeout 300000
+
 # Send an extra HTTP header (repeatable)
 flowspec run specs/ --header "x-vercel-protection-bypass: $BYPASS_TOKEN"
 
@@ -105,11 +108,20 @@ FlowSpec looks for `flowspec.config.yaml` in the current directory or parent dir
 
 ```yaml
 baseUrl: http://localhost:3000
-timeout: 10000
+timeout: 10000       # assertion retry budget (web + file assertions)
+stepTimeout: 60000   # CLI run-step process deadline (surface: cli only)
 specsDir: specs/
 ```
 
 CLI options override config file values.
+
+`timeout` and `stepTimeout` are two different clocks and are never
+interchangeable: `timeout` is how long an assertion keeps being re-checked
+before it fails, while `stepTimeout` is how long a single `surface: cli` run
+step's process may live before it is killed. `--step-timeout` must be a
+positive integer — `0` or a negative value is rejected with exit code 2,
+since a zero-millisecond deadline would kill every step the instant it
+starts.
 
 #### `cwd` and `captureLimit`: CLI-Surface Settings
 
@@ -317,10 +329,10 @@ expect:
 | `run` | Yes | The command to execute — a string or an array (see [No Shell, Ever](#no-shell-ever) below) |
 | `stdin` | No | Text written to the command's standard input, then the stream is closed |
 | `env` | No | Environment variables overlaid onto the inherited environment for this step only (does not leak to other steps) |
-| `timeout` | No | Milliseconds before the command is killed. Falls back to `--timeout` (or its config value, or the config schema's own 10000ms default) when absent |
+| `timeout` | No | Milliseconds before the command is killed. Falls back to `--step-timeout` (or its `stepTimeout` config value, or the 60000ms default) when absent |
 | `expect_exit` | No | The exit code this step must produce — see [Exit Codes Within a CLI Flow](#exit-codes-within-a-cli-flow) below |
 
-Note that `timeout` means something different here than it does for a web flow's assertion retries: for a CLI step it's a hard deadline — the command is killed (`SIGTERM`, escalating to `SIGKILL` if it doesn't exit) the moment it elapses — not a "poll until this much time has passed" window. Passing `--timeout 0` disables web assertion retries, but for a CLI step it means "kill almost immediately," so avoid `--timeout 0` for a project that mixes both surfaces.
+Note that a step's `timeout` is a hard deadline, not a retry window: the command is killed (`SIGTERM`, escalating to `SIGKILL` if it doesn't exit) the moment it elapses. It is a completely separate setting from the assertion retry budget, which is why the run-wide fallback for it is `--step-timeout`/`stepTimeout` rather than `--timeout`. `--timeout 0` therefore disables assertion retries without putting any command at risk of being killed.
 
 `run` accepts two forms:
 
