@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    branches: [main]    # semantic-release determines if a new version is needed
+    tags: ["v*"]        # manual tag fallback
+  workflow_dispatch:     # manual trigger for re-runs
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write        # npm provenance
+
+jobs:
+  # ── Semantic Release ────────────────────────────────────────────────
+  # Analyzes conventional commits since the last tag, determines the next
+  # version, publishes to npm, and creates a GitHub Release + git tag.
+  # Manual tag pushes and workflow_dispatch re-run publish for an existing
+  # version via the same action (semantic-release is idempotent: no new
+  # release-worthy commits → no release).
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun run test -- --run
+
+      - name: Build
+        run: bun run build
+
+      - uses: cycjimmy/semantic-release-action@v4
+        id: release
+        with:
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/npm
+            @semantic-release/github
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Release result
+        if: steps.release.outputs.new_release_published == 'true'
+        run: echo "Released v${{ steps.release.outputs.new_release_version }} to npm"
