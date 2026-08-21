@@ -49,11 +49,11 @@ jobs:
             @semantic-release/commit-analyzer
             @semantic-release/release-notes-generator
             @semantic-release/npm
+            @semantic-release/exec
             @semantic-release/github
             @semantic-release/git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Release result
         if: steps.release.outputs.new_release_published == 'true'
