@@ -22,8 +22,9 @@ import type { CliFlowSpec } from "../src/types";
  *    carrying { cwd?, timeout?, stepTimeout?, captureLimit? } (the merged
  *    config shape; stepTimeout was split out of timeout by the
  *    post-mission sweep, see test/cli-step-timeout.test.ts).
- *  - Phases in order: create workdir (src/workdir.ts) -> setup (present,
- *    no-op until a later item fills it in) -> steps (this item) ->
+ *  - Phases in order: create workdir (src/workdir.ts) -> setup (now
+ *    executed — see WI-811 and its dedicated coverage in
+ *    test/cli-runner-setup.test.ts) -> steps (this item) ->
  *    assertion hook (a later item plugs in; every fixture here uses
  *    `expect: []` so this item's tests never depend on that wiring) ->
  *    dispose workdir keyed on pass/fail.
@@ -188,17 +189,6 @@ describe("step execution: order, env, stdin, argv fidelity", () => {
       },
       { run: [execPath, "-e", "process.exit(0)"] },
     ]);
-
-    const result = await runCliFlow(flow, { cwd });
-
-    expect(result.success).toBe(true);
-  });
-
-  it("is a no-op for a cli flow's setup block (present but not executed by this item)", async () => {
-    const cwd = ownedTempDir();
-    const flow = cliFlow([{ run: [execPath, "-e", "process.exit(0)"] }], {
-      setup: [{ run: [execPath, "-e", "process.exit(0)"] }],
-    });
 
     const result = await runCliFlow(flow, { cwd });
 

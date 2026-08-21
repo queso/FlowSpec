@@ -75,7 +75,7 @@ async function pollUntilPass(
   let lastResult: MatchFailure | undefined = firstResult;
 
   while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
+    await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));
     lastResult = await check();
     if (!lastResult) {
       return undefined;

@@ -39,7 +39,7 @@ export interface CliAssertionFailure {
   workdir: string;
 }
 
-interface LastStepResult {
+export interface LastStepResult {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -131,22 +131,44 @@ export async function evaluateCliAssertion(
     );
   }
 
+  // The four stream branches below guard explicitly against a missing
+  // value, for the same reason file_contains/json_output do (see their
+  // comments): a schema-validated CliAssertion always has the verb's value
+  // present as a non-empty string, but this function is also reachable
+  // directly by a caller that bypassed validation. Left unguarded,
+  // `haystack.includes(undefined)` coerces to `haystack.includes("undefined")`
+  // and `new RegExp(undefined)` compiles to `/(?:)/`, which matches every
+  // string — both would let a never-specified assertion silently PASS
+  // rather than fail with a clear "missing" message.
+
   if ("stdout_contains" in assertion) {
+    if (typeof assertion.stdout_contains !== "string") {
+      return toFailure('Missing "stdout_contains" text', lastStep, workdir);
+    }
     const failure = matchContains(lastStep.stdout, assertion.stdout_contains);
     return failure ? toFailure(failure.message, lastStep, workdir) : undefined;
   }
 
   if ("stderr_contains" in assertion) {
+    if (typeof assertion.stderr_contains !== "string") {
+      return toFailure('Missing "stderr_contains" text', lastStep, workdir);
+    }
     const failure = matchContains(lastStep.stderr, assertion.stderr_contains);
     return failure ? toFailure(failure.message, lastStep, workdir) : undefined;
   }
 
   if ("stdout_matches" in assertion) {
+    if (typeof assertion.stdout_matches !== "string") {
+      return toFailure('Missing "stdout_matches" pattern', lastStep, workdir);
+    }
     const failure = matchRegex(lastStep.stdout, assertion.stdout_matches);
     return failure ? toFailure(failure.message, lastStep, workdir) : undefined;
   }
 
   if ("stderr_matches" in assertion) {
+    if (typeof assertion.stderr_matches !== "string") {
+      return toFailure('Missing "stderr_matches" pattern', lastStep, workdir);
+    }
     const failure = matchRegex(lastStep.stderr, assertion.stderr_matches);
     return failure ? toFailure(failure.message, lastStep, workdir) : undefined;
   }

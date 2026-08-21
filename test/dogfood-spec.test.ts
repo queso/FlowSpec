@@ -3,6 +3,7 @@ import { delimiter, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCliFlow } from "../src/cli-runner";
 import { parseFlowFile } from "../src/parser";
+import { asCliFlow } from "../src/types";
 
 /**
  * Tests for WI-816: the dogfood spec — FlowSpec specs its own `flowspec
@@ -46,7 +47,11 @@ describe("specs/init.flow.yaml", () => {
   let originalPath: string | undefined;
 
   beforeAll(() => {
-    execSync("bun run pretest:e2e", { cwd: repoRoot, stdio: "pipe" });
+    execSync("bun run pretest:e2e", {
+      cwd: repoRoot,
+      stdio: "pipe",
+      timeout: 45000,
+    });
 
     const binDir = join(repoRoot, "node_modules", ".bin");
     originalPath = process.env.PATH;
@@ -69,7 +74,7 @@ describe("specs/init.flow.yaml", () => {
   });
 
   it("passes when actually run via the real CLI engine, twice in a row with no leftover state between runs", async () => {
-    const flow = parseFlowFile(DOGFOOD_SPEC_PATH);
+    const flow = asCliFlow(parseFlowFile(DOGFOOD_SPEC_PATH));
 
     const first = await runCliFlow(flow, {});
     expect(first.success).toBe(true);

@@ -58,6 +58,19 @@ const READ_STDIN_TO_STDOUT = [
   "process.stdin.on('data', (c) => { d += c; });",
   "process.stdin.on('end', () => { process.stdout.write(d); });",
 ].join(" ");
+// Unlike READ_STDIN_TO_STDOUT (which buffers the whole input and only
+// writes once stdin ends), this echoes each chunk to stdout as it arrives
+// — while still reading stdin. That interleaving is the shape that could
+// deadlock a parent which blocks writing a large stdin payload before it
+// starts draining stdout: the child would fill its stdout pipe buffer,
+// block on that write(), stop reading stdin, and the parent's stdin write
+// would then block forever on a child that has stopped reading. No
+// explicit process.exit() on 'end': calling it immediately after the last
+// chunk arrives can truncate output still in flight to the stdout pipe
+// (verified interactively) — letting the process exit naturally once the
+// event loop drains ensures every write is actually flushed first.
+const ECHO_STDIN_STREAMING =
+  "process.stdin.on('data', (c) => { process.stdout.write(c); });";
 
 describe("spawnProcess: basic capture", () => {
   it("captures stdout, stderr, and a zero exit code for a simple command", async () => {
@@ -217,6 +230,36 @@ describe("spawnProcess: stdin option", () => {
       { stdin: "x".repeat(1_000_000) },
     );
     expect(result.exitCode).toBe(3);
+  });
+
+  it("does not deadlock when a large stdin payload is piped to a child that echoes it to stdout while still reading (stdin write must not block before stdout/stderr reads start)", async () => {
+    // Regression/pinning test (CodeRabbit review, PR #16): the reviewer
+    // flagged that spawnWithBun previously awaited the whole stdin write
+    // before starting the bounded stdout/stderr reads, which is a deadlock
+    // risk in principle — a child that reads stdin and also writes more
+    // than one pipe buffer of output could block on its own undrained
+    // stdout, stop reading stdin, and leave the parent's stdin write
+    // blocked forever on a child that stopped reading.
+    //
+    // Investigated empirically (including against a real, unmodified `cat`
+    // child process consuming zero drain from the parent, with payloads up
+    // to 20MB): under Bun 1.3.11, Bun.spawn's output pipes are drained at
+    // the native level as soon as the child is spawned, regardless of
+    // whether/when the JS side starts reading the ReadableStream — so this
+    // exact ordering bug does not currently produce an observable hang.
+    // The ordering was still fixed defensively (stdin write now starts
+    // concurrently with, not before, the stream reads) since relying on
+    // that native-draining behavior is not a documented contract. This
+    // test pins the resulting behavior — large interleaved stdin/stdout
+    // traffic completes correctly and promptly — as a regression guard.
+    const input = "x".repeat(1_000_000);
+    const result = await spawnProcess(
+      [process.execPath, "-e", ECHO_STDIN_STREAMING],
+      { stdin: input, timeout: 10000 },
+    );
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.length).toBe(input.length);
   });
 });
 

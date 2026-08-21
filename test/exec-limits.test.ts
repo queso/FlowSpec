@@ -263,6 +263,36 @@ describe("output capture bounds", () => {
     expect(result.truncated).toBe(false);
     expect(result.stdout).toBe(written);
   });
+
+  it("truncates cleanly at a captureLimit that lands mid-character, without splitting the multi-byte UTF-8 sequence", async () => {
+    // Regression test (CodeRabbit review, PR #16): captureLimit is a BYTE
+    // ceiling, but every other truncation fixture in this file uses
+    // single-byte ASCII, so a byte-level slice landing inside a multi-byte
+    // UTF-8 sequence was never exercised. "é" is U+00E9, encoded as the
+    // 2-byte UTF-8 sequence 0xC3 0xA9. captureLimit: 5 lands after 2 whole
+    // characters (4 bytes) plus one stray leading byte (0xC3) of a third —
+    // a byte offset that sits mid-character. A blind byte slice fed
+    // straight to TextDecoder would decode that dangling lead byte as a
+    // U+FFFD replacement-character artifact instead of cleanly stopping
+    // before it.
+    const char = "é";
+    const captureLimit = 5;
+    const written = char.repeat(50);
+    const result = await spawnProcess(
+      [
+        process.execPath,
+        "-e",
+        `process.stdout.write(${JSON.stringify(written)})`,
+      ],
+      { captureLimit },
+    );
+    expect(result.truncated).toBe(true);
+    // The captured head must be exactly the whole characters that fit
+    // (2 of them, "éé") plus the truncation marker — never a partial
+    // character or a replacement-character artifact.
+    expect(result.stdout).toBe(`${char.repeat(2)}[truncated]`);
+    expect(result.stdout).not.toContain("�");
+  });
 });
 
 describe("within limits: exact capture, no flags set", () => {

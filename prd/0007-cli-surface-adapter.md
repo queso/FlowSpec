@@ -46,9 +46,13 @@ CLI goes first, ahead of the Conduit adapter (#7), for three reasons:
   the `surface` discriminator, per-surface step/assertion schemas, and runner dispatch.
   Those decisions should be made against the simplest surface, not entangled with the
   Conduit kernel's output conventions.
-- **The plumbing already exists.** `execCommand` (`src/runner.ts:112`) already spawns a
-  process with captured stdout/stderr/exit code, with a Bun-native path and a Node
-  fallback. The CLI runner is mostly schema and assertions, not new execution machinery.
+- **The plumbing is a close cousin of something that already exists.** `execCommand`
+  (`src/runner.ts:112`) already spawns a process with captured stdout/stderr/exit code,
+  with a Bun-native path and a Node fallback — but it hardcodes stdin to `ignore` and has
+  no `cwd`/`env` support, so it can't be reused as-is. The CLI runner introduces a sibling
+  primitive, `spawnProcess` (`src/exec.ts`), built on the same Bun-native/Node-fallback
+  pattern; the CLI runner itself is mostly schema and assertions, not new execution
+  machinery.
 - **Conduit is roughly a specialization of CLI.** `run_flow` is "run a command"; `env`,
   `file_exists`, and JSON-file assertions appear in both proposals. Landing CLI first
   means #7 inherits most of its machinery.
@@ -173,8 +177,10 @@ specifying a shell script's behavior — wrap it in a script and `run` that.
   (ADR-0003: specs never interpolate).
 - `stdin` is written to the child and the stream closed — sufficient for confirmation
   prompts, not for interaction.
-- `timeout` bounds the step; on expiry the process is killed and the step fails with a
-  timeout error. Default comes from the existing config `timeout`.
+- `stepTimeout` bounds the step; on expiry the process is killed and the step fails with a
+  timeout error. Default comes from the config `stepTimeout` (60s), a key distinct from
+  the assertion-retry `timeout` — the two clocks measure different things and the config
+  key names them separately.
 
 ### Execution model: fresh cwd per flow
 
@@ -228,8 +234,9 @@ the offending output — not a crash.
 ### Runner dispatch, reporting, and what stays shared
 
 `runFlow` (`src/runner.ts:709`) branches on surface before any session exists. The web
-path is untouched. The CLI path builds on `execCommand` and never resolves, launches, or
-requires agent-browser — a CLI-only run must work on a box where it isn't installed.
+path is untouched. The CLI path builds on `spawnProcess` (`src/exec.ts`) and never
+resolves, launches, or requires agent-browser — a CLI-only run must work on a box where
+it isn't installed.
 
 Everything around the runner stays shared: one parser, one reporter, one `FlowResult`
 stream, one summary (`formatSummary`) across a mixed-surface run, one PreToolUse hook
@@ -344,8 +351,9 @@ place to seed fixture files — with PRD-0006's phase-labeled error reporting in
 
 ## 9. Dependencies
 
-- Builds on `execCommand`'s no-shell argv spawning (`src/runner.ts:112`), PRD-0004
-  assertion retry, and PRD-0006's setup phases and skip accounting.
+- Builds on the no-shell argv-spawning pattern `execCommand` (`src/runner.ts:112`)
+  established, via a sibling primitive `spawnProcess` (`src/exec.ts`), plus PRD-0004
+  assertion retry and PRD-0006's setup phases and skip accounting.
 - Touches `src/types.ts`, `src/parser.ts`, `src/runner.ts`, `src/reporter.ts`,
   `src/config.ts` (`cwd`), and docs. No new packages anticipated.
 - Downstream: the Conduit adapter (#7) consumes the surface dispatch and the

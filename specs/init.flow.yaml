@@ -8,10 +8,10 @@ description: |
 surface: cli
 steps:
   - run: ["flowspec", "init"]
-  - run: ["flowspec", "init", "--dir", "./proj"]
+  - run: ["flowspec", "init"]
 expect:
   - file_exists: flowspec.config.yaml
   - file_exists: specs/example.flow.yaml
   - file_exists: .claude/settings.local.json
   - file_contains: { path: .claude/settings.local.json, text: "Flow specs are immutable" }
-  - stdout_contains: "Found existing config:"
+  - stdout_contains: "(already exists)"

@@ -232,26 +232,6 @@ export const CliAssertionSchema = z.union([
 
 export type CliAssertion = z.infer<typeof CliAssertionSchema>;
 
-/** The CLI-surface assertion verbs — anything else is not a CLI assertion. */
-const CLI_ASSERTION_VERBS = [
-  "exit_code",
-  "stdout_contains",
-  "stdout_matches",
-  "stderr_contains",
-  "stderr_matches",
-  "file_exists",
-  "file_contains",
-  "json_output",
-] as const;
-
-/** The web-surface assertion verbs — anything else is not a web assertion. */
-const WEB_ASSERTION_VERBS = [
-  "url",
-  "visible",
-  "matches",
-  "not_visible",
-] as const;
-
 /**
  * Resolves a verb key directly to its own schema (rather than the surface's
  * whole union) so a structurally-matched-but-malformed assertion (e.g. a
@@ -260,8 +240,13 @@ const WEB_ASSERTION_VERBS = [
  * fail too (they don't have this assertion's key at all), and Zod's
  * invalid_union error swallows every member's specific message behind a
  * generic one.
+ *
+ * This is the single source of truth for the CLI assertion vocabulary:
+ * CLI_ASSERTION_VERBS below is derived from its keys rather than listed
+ * separately, so a verb added here can never drift out of sync with the
+ * verbs `validateAssertionForSurface` recognizes.
  */
-const CLI_ASSERTION_SCHEMAS: Record<string, z.ZodTypeAny> = {
+const CLI_ASSERTION_SCHEMAS = {
   exit_code: ExitCodeAssertionSchema,
   stdout_contains: StdoutContainsAssertionSchema,
   stdout_matches: StdoutMatchesAssertionSchema,
@@ -270,14 +255,29 @@ const CLI_ASSERTION_SCHEMAS: Record<string, z.ZodTypeAny> = {
   file_exists: FileExistsAssertionSchema,
   file_contains: FileContainsAssertionSchema,
   json_output: JsonOutputAssertionSchema,
-};
+} satisfies Record<string, z.ZodTypeAny>;
 
-const WEB_ASSERTION_SCHEMAS: Record<string, z.ZodTypeAny> = {
+/** The CLI-surface assertion verbs — anything else is not a CLI assertion. */
+const CLI_ASSERTION_VERBS = Object.keys(
+  CLI_ASSERTION_SCHEMAS,
+) as (keyof typeof CLI_ASSERTION_SCHEMAS)[];
+
+/**
+ * Single source of truth for the web assertion vocabulary — see
+ * CLI_ASSERTION_SCHEMAS above for why WEB_ASSERTION_VERBS is derived from
+ * this rather than listed separately.
+ */
+const WEB_ASSERTION_SCHEMAS = {
   url: UrlAssertionSchema,
   visible: VisibleAssertionSchema,
   matches: MatchesAssertionSchema,
   not_visible: NotVisibleAssertionSchema,
-};
+} satisfies Record<string, z.ZodTypeAny>;
+
+/** The web-surface assertion verbs — anything else is not a web assertion. */
+const WEB_ASSERTION_VERBS = Object.keys(
+  WEB_ASSERTION_SCHEMAS,
+) as (keyof typeof WEB_ASSERTION_SCHEMAS)[];
 
 /** The web-surface step verbs — anything else is not a web step. */
 const WEB_STEP_VERBS = [
@@ -541,7 +541,17 @@ function validateAssertionForSurface(
     return;
   }
 
-  addSchemaFailureIssues(schemas[verb], assertion, verb, path, ctx);
+  // `schemas` is one of two object-literal maps whose keys are known,
+  // narrow string literals (enforced via `satisfies Record<string,
+  // z.ZodTypeAny>` at their declarations) — precise enough that
+  // Object.keys(...) derives CLI_ASSERTION_VERBS/WEB_ASSERTION_VERBS without
+  // hand-listing them (see those declarations), but too precise for `verb`
+  // (a plain string narrowed only at runtime by `matchedVerb`, since
+  // `surface` can't correlate which literal-key union it belongs to here).
+  // The runtime guarantee that `verb` is actually a key of `schemas` already
+  // comes from `matchedVerb` searching exactly this surface's own verb list.
+  const schema = (schemas as Record<string, z.ZodTypeAny>)[verb];
+  addSchemaFailureIssues(schema, assertion, verb, path, ctx);
 }
 
 function validateExpectForSurface(
@@ -645,24 +655,95 @@ export type WebFlowSpec = Omit<
 };
 
 /**
+ * Schemas backing asCliFlow/asWebFlow's runtime check (CodeRabbit review,
+ * PR #16): CliFlowSpec/WebFlowSpec were hand-written TypeScript narrowings
+ * with no schema of their own, so a caller that builds a flow object
+ * without going through FlowSpecSchema got no runtime validation at all —
+ * exactly what test/cli-runner.test.ts's `cliFlow()` fixture (and its
+ * siblings) do, via `as unknown as CliFlowSpec`.
+ *
+ * These use real `z.array(CliStepSchema)` / `z.array(CliAssertionSchema)`
+ * (and the web equivalents) rather than FlowSpecSchema's `z.custom` +
+ * superRefine dance. That's deliberately safe here even though a real
+ * union at a field like this is what FlowSpecSchema itself avoids (see its
+ * doc comment): FlowSpecSchema is the PRIMARY, per-field error-reporting
+ * pass — the one a spec author's YAML actually goes through, where superRefine
+ * is what turns a union's generic "Invalid input" into a message naming the
+ * specific bad verb/key. CliFlowSpecSchema/WebFlowSpecSchema instead run
+ * only inside asCliFlow/asWebFlow, on a value that (on every production path)
+ * has ALREADY passed FlowSpecSchema's superRefine once — this is a
+ * confirming re-parse guarding against a caller that skipped that pass
+ * entirely, not the place a human-facing per-field message needs to come
+ * from. A coarser "this whole value doesn't match its surface" failure is
+ * an acceptable, deliberately-chosen tradeoff for that narrower job.
+ *
+ * `expect` deliberately has no `.min(1)` here, unlike FlowSpecSchema's own
+ * enforced floor of at least one assertion. That floor is an AUTHORING rule
+ * ("a published spec must actually assert something"), which is
+ * FlowSpecSchema's job at parse time — not a grammar-correctness question,
+ * which is this schema's only concern (does `expect` actually hold this
+ * surface's assertion vocabulary, whatever its length). Plenty of tests
+ * exercise runFlow directly with a hand-built, `expect: []` flow object to
+ * test dispatch/execution mechanics unrelated to assertions at all (see
+ * test/runner-dispatch.test.ts's own `cliFlow()` fixture) — re-enforcing the
+ * authoring floor here would reject exactly that established, legitimate
+ * pattern for a reason that has nothing to do with what this schema exists
+ * to catch (a wrong-surface verb slipping through an unchecked cast).
+ */
+const CliFlowSpecSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  surface: z.literal("cli"),
+  setup: z.array(CliStepSchema).optional(),
+  steps: z.array(CliStepSchema).min(1),
+  expect: z.array(CliAssertionSchema),
+});
+
+const WebFlowSpecSchema = z
+  .object({
+    name: z.string(),
+    description: z.string(),
+    // Mirrors FlowSpecSchema's own `surface` field exactly (optional,
+    // defaulting to "web") rather than a bare `z.literal("web")`: runFlow's
+    // dispatch (`flow.surface === "cli"`) treats an absent surface as web, and
+    // plenty of callers — runner.test.ts's fixtures among them — build a
+    // FlowSpec object directly (never through FlowSpecSchema.parse) with no
+    // `surface` key at all. A bare literal would reject exactly the shape
+    // production code has always accepted as web.
+    // `expect` has no `.min(1)` for the same reason CliFlowSpecSchema's
+    // doesn't — see its comment.
+    surface: SurfaceSchema.optional().default("web"),
+    setup: z.array(FlowStepSchema).optional(),
+    steps: z.array(FlowStepSchema).min(1),
+    expect: z.array(StepAssertionSchema),
+  })
+  .refine((value) => value.surface === "web", {
+    message: 'surface must be "web" (or absent) for a WebFlowSpec',
+    path: ["surface"],
+  });
+
+/**
  * Narrow a flow to one surface's vocabulary, at the ONE place the surface is
  * dispatched on (src/runner.ts's runFlow).
  *
  * FlowSpecSchema's superRefine already rejects, at parse time, any flow
  * whose steps/setup/expect don't match its declared surface — so for a
- * parsed flow these restate a guarantee the schema has enforced. They are
- * assertions rather than predicates because `surface` cannot narrow the
- * object it sits on (FlowSpec is one object type, not a discriminated
- * union). Keeping them as two named, documented calls at the dispatch point
- * means a caller that hand-builds an unvalidated flow has exactly one place
- * to have gone wrong, instead of an unchecked `as CliStep[]` at every use
- * site downstream.
+ * flow that actually went through FlowSpecSchema.parse, the re-validation
+ * below restates a guarantee already enforced. It exists for the caller
+ * that DIDN'T: `flow` is typed as FlowSpec, but nothing prevents a caller
+ * from constructing one by hand (test fixtures already do). Parsing against
+ * CliFlowSpecSchema/WebFlowSpecSchema here, instead of a bare `as` cast,
+ * means such a caller fails loudly at the narrowing point instead of
+ * silently handing CliStep/CliAssertion-typed data that was never actually
+ * checked to every use site downstream.
  */
 export function asCliFlow(flow: FlowSpec): CliFlowSpec {
+  CliFlowSpecSchema.parse(flow);
   return flow as CliFlowSpec;
 }
 
 export function asWebFlow(flow: FlowSpec): WebFlowSpec {
+  WebFlowSpecSchema.parse(flow);
   return flow as WebFlowSpec;
 }
 

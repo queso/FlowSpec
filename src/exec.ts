@@ -193,6 +193,56 @@ function startBoundedRead(
   };
 }
 
+/**
+ * captureLimit is a byte ceiling, so a slice landing inside a multi-byte
+ * UTF-8 sequence is possible — the head bytes of that sequence would
+ * otherwise decode as a U+FFFD replacement-character artifact rather than
+ * cleanly stopping before it. Walks back from the end of `buffer` (at most
+ * 3 bytes — the longest possible UTF-8 continuation run) to find the start
+ * of the trailing sequence, and drops it if it isn't fully present.
+ */
+function trimIncompleteUtf8Tail(buffer: Uint8Array): Uint8Array {
+  const CONTINUATION_MASK = 0xc0;
+  const CONTINUATION_TAG = 0x80;
+  const MAX_SEQUENCE_LENGTH = 4;
+
+  let leadIndex = buffer.length - 1;
+  let walked = 0;
+  while (
+    leadIndex >= 0 &&
+    walked < MAX_SEQUENCE_LENGTH &&
+    (buffer[leadIndex] & CONTINUATION_MASK) === CONTINUATION_TAG
+  ) {
+    leadIndex--;
+    walked++;
+  }
+  if (leadIndex < 0) {
+    // Nothing but continuation bytes for the whole lookback window — not a
+    // shape a real truncation boundary produces; leave it untouched rather
+    // than risk trimming legitimate content.
+    return buffer;
+  }
+
+  const lead = buffer[leadIndex] as number;
+  let expectedLength: number;
+  if ((lead & 0x80) === 0x00) {
+    expectedLength = 1; // ASCII
+  } else if ((lead & 0xe0) === 0xc0) {
+    expectedLength = 2;
+  } else if ((lead & 0xf0) === 0xe0) {
+    expectedLength = 3;
+  } else if ((lead & 0xf8) === 0xf0) {
+    expectedLength = 4;
+  } else {
+    // Not a valid UTF-8 lead byte — the source stream wasn't valid UTF-8
+    // to begin with, which is out of scope here; leave it as-is.
+    return buffer;
+  }
+
+  const actualLength = buffer.length - leadIndex;
+  return actualLength < expectedLength ? buffer.subarray(0, leadIndex) : buffer;
+}
+
 /** Decode what a capture holds so far into its final text form. */
 function finalizeCapture(capture: StreamCapture): BoundedRead {
   const buffer = new Uint8Array(capture.bytes);
@@ -202,8 +252,14 @@ function finalizeCapture(capture: StreamCapture): BoundedRead {
     offset += chunk.length;
   }
 
+  // Only trim when the stream was actually cut off at the capture limit: an
+  // untruncated capture is the process's real, complete output and must
+  // never be silently shortened, even if it happens to end in a byte
+  // sequence that looks incomplete for some unrelated reason.
+  const decodable = capture.truncated ? trimIncompleteUtf8Tail(buffer) : buffer;
+
   return {
-    text: new TextDecoder("utf-8").decode(buffer),
+    text: new TextDecoder("utf-8").decode(decodable),
     truncated: capture.truncated,
   };
 }

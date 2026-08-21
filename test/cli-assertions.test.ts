@@ -8,7 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { evaluateCliAssertion } from "../src/cli-assertions";
+import {
+  evaluateCliAssertion,
+  type LastStepResult,
+} from "../src/cli-assertions";
 import * as FileMatchersModule from "../src/file-matchers";
 import * as MatchersModule from "../src/matchers";
 import { EXCERPT_LIMIT } from "../src/matchers";
@@ -48,7 +51,7 @@ import { POLL_INTERVAL } from "../src/runner";
  * the CLI runner item's job, one layer up.
  */
 
-function lastStep(overrides: Partial<Record<string, unknown>> = {}) {
+function lastStep(overrides: Partial<LastStepResult> = {}) {
   return {
     stdout: "some output",
     stderr: "",
@@ -245,6 +248,63 @@ describe("stdout_matches / stderr_matches", () => {
     );
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+describe("stream assertions guard against a missing value the schema would normally prevent", () => {
+  // A schema-validated CliAssertion always has its verb's value present as a
+  // non-empty string (src/types.ts's nonEmptyString), but this function is
+  // also reachable directly by a caller that bypassed validation — exactly
+  // the case file_contains/json_output already guard against (see their
+  // comments in src/cli-assertions.ts). The four stream branches used to
+  // pass an unguarded value straight to matchContains/matchRegex, which
+  // reach it via JS's string coercion: `haystack.includes(undefined)`
+  // coerces to `haystack.includes("undefined")`, and `new RegExp(undefined)`
+  // compiles to `/(?:)/`, which matches every string. Both let a
+  // never-specified assertion silently PASS instead of failing clearly.
+
+  it('stdout_contains with a missing value fails clearly instead of matching the coerced string "undefined"', async () => {
+    const result = await evaluateCliAssertion(
+      { stdout_contains: undefined } as unknown as CliAssertion,
+      lastStep({ stdout: "the value is undefined here" }),
+      "/tmp/irrelevant",
+      0,
+    );
+    expect(result).toBeDefined();
+    expect(result?.message).toBe('Missing "stdout_contains" text');
+  });
+
+  it('stderr_contains with a missing value fails clearly instead of matching the coerced string "undefined"', async () => {
+    const result = await evaluateCliAssertion(
+      { stderr_contains: undefined } as unknown as CliAssertion,
+      lastStep({ stderr: "the value is undefined here" }),
+      "/tmp/irrelevant",
+      0,
+    );
+    expect(result).toBeDefined();
+    expect(result?.message).toBe('Missing "stderr_contains" text');
+  });
+
+  it("stdout_matches with a missing pattern fails clearly instead of matching every string via new RegExp(undefined)", async () => {
+    const result = await evaluateCliAssertion(
+      { stdout_matches: undefined } as unknown as CliAssertion,
+      lastStep({ stdout: "anything at all" }),
+      "/tmp/irrelevant",
+      0,
+    );
+    expect(result).toBeDefined();
+    expect(result?.message).toBe('Missing "stdout_matches" pattern');
+  });
+
+  it("stderr_matches with a missing pattern fails clearly instead of matching every string via new RegExp(undefined)", async () => {
+    const result = await evaluateCliAssertion(
+      { stderr_matches: undefined } as unknown as CliAssertion,
+      lastStep({ stderr: "anything at all" }),
+      "/tmp/irrelevant",
+      0,
+    );
+    expect(result).toBeDefined();
+    expect(result?.message).toBe('Missing "stderr_matches" pattern');
   });
 });
 

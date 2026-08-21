@@ -97,7 +97,11 @@ expect:
       );
 
       for (let attempt = 1; attempt <= 2; attempt++) {
-        execSync("bun run pretest:e2e", { cwd: repoRoot, stdio: "pipe" });
+        execSync("bun run pretest:e2e", {
+          cwd: repoRoot,
+          stdio: "pipe",
+          timeout: 45000,
+        });
 
         expect(existsSync(join(repoRoot, "dist", "index.js"))).toBe(true);
         expect(existsSync(binPath)).toBe(true);
@@ -105,6 +109,7 @@ expect:
         const output = execSync(`"${binPath}" run "${fixtureDir}"`, {
           cwd: repoRoot,
           encoding: "utf-8",
+          timeout: 15000,
         });
         expect(output).toContain("plumbing-smoke-test");
         expect(output).toContain("1 flow");

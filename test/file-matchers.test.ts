@@ -76,6 +76,25 @@ describe("fileExists", () => {
     expect(result).toBeDefined();
     expect(result?.message).toContain(filePath);
   });
+
+  it("with a timeout shorter than POLL_INTERVAL, returns close to the configured timeout rather than overshooting by a full poll interval", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "never-appears-short-timeout.txt");
+    const timeout = 50;
+    expect(timeout).toBeLessThan(POLL_INTERVAL);
+
+    const start = Date.now();
+    const result = await fileExists(filePath, timeout);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeDefined();
+    // A buggy loop always sleeps a full POLL_INTERVAL before re-checking
+    // the deadline, so it returns after ~POLL_INTERVAL (250ms) even though
+    // the caller only asked to wait 50ms. The fix clamps the final sleep to
+    // the remaining time on the deadline, so elapsed should stay close to
+    // the configured timeout.
+    expect(elapsed).toBeLessThan(100);
+  });
 });
 
 describe("fileContains", () => {
