@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -595,6 +596,112 @@ describe("file assertion paths are confined to the workdir", () => {
 
     expect(result).toBeDefined();
     expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
+  // Regression coverage for the symlink-traversal fix: `resolve()` alone
+  // does not follow symlinks, so a symlink planted INSIDE the workdir that
+  // points somewhere else can resolve, post-symlink, outside the workdir
+  // while still passing a naive string-prefix check against the
+  // pre-symlink resolved path. See resolveWithinWorkdir's comment in
+  // src/cli-assertions.ts.
+  it("rejects a file_exists path traversing a symlink inside the workdir that points outside it", async () => {
+    const workdir = makeTempDir();
+    const outside = makeTempDir();
+    writeFileSync(join(outside, "secret.txt"), "top secret");
+    symlinkSync(outside, join(workdir, "linked"));
+
+    const result = await evaluateCliAssertion(
+      { file_exists: "linked/secret.txt" },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
+  it("rejects a file_contains path traversing a symlink inside the workdir that points outside it", async () => {
+    const workdir = makeTempDir();
+    const outside = makeTempDir();
+    writeFileSync(join(outside, "secret.txt"), "the needle is here");
+    symlinkSync(outside, join(workdir, "linked"));
+
+    const result = await evaluateCliAssertion(
+      { file_contains: { path: "linked/secret.txt", text: "needle" } },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
+  // Regression guard: the symlink-traversal fix must not break the
+  // retry-for-a-not-yet-created-file contract. realpathSync throws ENOENT
+  // on a path that doesn't exist yet, so a naive fix that realpath'd the
+  // full requested path would misreport every not-yet-created file as an
+  // "outside workdir" rejection instead of the normal "expected file to
+  // exist" failure. A file that never appears, with no symlink involved at
+  // all, must still fail with the ordinary missing-file message.
+  it("still reports the normal 'file does not exist' failure (not an outside-workdir rejection) for a plain not-yet-created file", async () => {
+    const workdir = makeTempDir();
+
+    const result = await evaluateCliAssertion(
+      { file_exists: "not-created-yet.txt" },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message.toLowerCase()).not.toContain("outside");
+    expect(result?.message).toContain("Expected file to exist");
+  });
+
+  // Regression guard for the same retry contract via file_exists's actual
+  // polling path (not just the zero-timeout case above): a file created
+  // mid-window, reached through no symlink at all, must still be found —
+  // proving the fix didn't accidentally realpath the not-yet-existing
+  // target and throw ENOENT partway through a poll.
+  it("still retries and passes once a plain (non-symlinked) file appears mid-window", async () => {
+    const workdir = makeTempDir();
+    const filePath = join(workdir, "appears-later-again.txt");
+
+    const resultPromise = evaluateCliAssertion(
+      { file_exists: "appears-later-again.txt" },
+      lastStep(),
+      workdir,
+      1000,
+    );
+    setTimeout(() => writeFileSync(filePath, "now it exists"), 300);
+    const result = await resultPromise;
+
+    expect(result).toBeUndefined();
+  });
+
+  // Regression guard for macOS-style symlinked tmp dirs (e.g. /tmp ->
+  // /private/tmp): a workdir that is itself reached only through a
+  // symlink must still accept its own files, since realpathSync on the
+  // workdir root is what makes the two sides of the containment
+  // comparison agree.
+  it("accepts a file inside a workdir that is itself reached only through a symlink", async () => {
+    const realDir = mkdtempSync(join(tmpdir(), "flowspec-cli-assertions-"));
+    tempDirs.push(realDir);
+    const symlinkedWorkdir = `${realDir}-symlinked`;
+    symlinkSync(realDir, symlinkedWorkdir);
+    tempDirs.push(symlinkedWorkdir);
+    writeFileSync(join(realDir, "output.txt"), "content");
+
+    const result = await evaluateCliAssertion(
+      { file_exists: "output.txt" },
+      lastStep(),
+      symlinkedWorkdir,
+      0,
+    );
+
+    expect(result).toBeUndefined();
   });
 });
 

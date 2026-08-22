@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -106,7 +106,10 @@ expect:
         expect(existsSync(join(repoRoot, "dist", "index.js"))).toBe(true);
         expect(existsSync(binPath)).toBe(true);
 
-        const output = execSync(`"${binPath}" run "${fixtureDir}"`, {
+        // Pass args as an array (no shell) so binPath/fixtureDir can't be
+        // reinterpreted by a shell — safe even if a path ever contained
+        // spaces or shell metacharacters like $, `, or quotes.
+        const output = execFileSync(binPath, ["run", fixtureDir], {
           cwd: repoRoot,
           encoding: "utf-8",
           timeout: 15000,

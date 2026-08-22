@@ -139,4 +139,50 @@ describe("asWebFlow: runtime validation", () => {
 
     expect(() => asWebFlow(malformed)).toThrow();
   });
+
+  /**
+   * CodeRabbit review comment (this PR, src/types.ts ~745-748): asWebFlow's
+   * body was `WebFlowSpecSchema.parse(flow); return flow as WebFlowSpec;` —
+   * running the parse purely for its throwing side effect and then returning
+   * the ORIGINAL `flow`, discarding the parsed value entirely. That parsed
+   * value is exactly where WebFlowSpecSchema's `surface:
+   * SurfaceSchema.optional().default("web")` lives: for a hand-built flow
+   * that never had a `surface` key at all, the schema parses successfully
+   * (the default fills it in on the PARSED object), but the returned object
+   * — being the untouched input — still has `surface === undefined` at
+   * runtime, while WebFlowSpec's type says `surface: "web"`. That's a type
+   * lie a caller could act on (e.g. a `flow.surface === "web"` check failing
+   * on a value TypeScript insists is web-surface).
+   */
+  it('returns surface "web" for a hand-built flow whose surface key is omitted entirely, not surface: undefined', () => {
+    const { surface: _omitted, ...withoutSurface } = unvalidatedWebFlow();
+    const flow = withoutSurface as unknown as FlowSpec;
+
+    const webFlow = asWebFlow(flow);
+
+    expect(webFlow.surface).toBe("web");
+  });
+
+  /**
+   * Guards the approach chosen to fix the bug above: whichever way asWebFlow
+   * comes to guarantee `surface === "web"` on its return value, it must not
+   * do so by re-parsing through a schema that silently strips fields
+   * WebFlowSpecSchema doesn't itself declare. WebFlowSpecSchema declares
+   * exactly FlowSpec's five fields (name, description, surface, setup,
+   * steps, expect) — the same set FlowSpec itself has — so a well-formed
+   * flow's own fields must all survive the round trip through asWebFlow.
+   */
+  it("preserves setup and all other fields through the surface narrowing", () => {
+    const flow = unvalidatedWebFlow({
+      setup: [{ visit: "/login" }],
+    });
+
+    const webFlow = asWebFlow(flow);
+
+    expect(webFlow.setup).toEqual([{ visit: "/login" }]);
+    expect(webFlow.name).toBe("web-flow");
+    expect(webFlow.description).toBe("A web flow");
+    expect(webFlow.steps).toEqual([{ visit: "/home" }]);
+    expect(webFlow.expect).toEqual([{ visible: "Hello" }]);
+  });
 });

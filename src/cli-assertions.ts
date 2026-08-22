@@ -17,7 +17,8 @@
  * async writer can still change the answer.
  */
 
-import { resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
 import { fileContains, fileExists } from "./file-matchers.js";
 import {
   boundedExcerpt,
@@ -50,6 +51,67 @@ type ResolvedPath =
   | { ok: false; message: string };
 
 /**
+ * Resolve the real, symlink-free path of the deepest ancestor of
+ * `absolutePath` that currently exists on disk, walking upward one path
+ * component at a time until something resolves (or the filesystem root is
+ * reached without finding anything).
+ *
+ * This exists to defend against symlink traversal WITHOUT breaking
+ * file_exists/file_contains's retry-for-a-not-yet-created-file contract
+ * (see src/file-matchers.ts's pollUntilPass): those two assertions poll
+ * while an async writer may still be creating the target file, and
+ * `realpathSync` throws ENOENT on a path that doesn't exist yet. Naively
+ * realpathing the full requested path would turn every "waiting for the
+ * file to appear" check into an immediate hard failure.
+ *
+ * The insight that makes walking up to the deepest EXISTING ancestor
+ * sufficient: a symlink is itself a filesystem entry, so a path component
+ * that doesn't exist yet cannot itself be a symlink. Once the deepest
+ * existing ancestor's real path is confirmed to stay inside the workdir,
+ * every remaining (not-yet-existing) trailing component is a plain, inert
+ * path segment — there is nothing further for a symlink to hijack.
+ */
+function realpathDeepestExisting(absolutePath: string): string {
+  let current = absolutePath;
+  for (;;) {
+    try {
+      return realpathSync(current);
+    } catch (error) {
+      const parent = dirname(current);
+      const isMissing = (error as NodeJS.ErrnoException)?.code === "ENOENT";
+      if (!isMissing || parent === current) {
+        // Either a non-ENOENT error (permissions, a path component that
+        // turned out not to be a directory, etc.) or we've walked all the
+        // way to a filesystem root without resolving anything. Return the
+        // unresolved path as-is rather than looping forever or throwing —
+        // the containment check downstream fails closed against it if it
+        // doesn't match the (already-realpath'd) workdir root.
+        return current;
+      }
+      current = parent;
+    }
+  }
+}
+
+/**
+ * realpathSync the workdir root itself, falling back to the plain resolved
+ * path if that fails (the workdir should always exist by the time an
+ * assertion runs, but this avoids a hard crash over a defensive edge case).
+ * This matters on macOS, where `/tmp` is itself a symlink to `/private/tmp`
+ * — without realpath'ing the root too, a workdir created via
+ * `mkdtempSync(tmpdir())` would never compare equal to its own
+ * realpath'd descendants (see test/dogfood-plumbing.test.ts, which
+ * realpathSync's its temp dir for the same reason).
+ */
+function safeRealpath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
  * Resolve a file-assertion path against `workdir` and confine it there.
  *
  * The per-flow temp working directory is the whole point of CLI isolation,
@@ -63,23 +125,42 @@ type ResolvedPath =
  * either an exact match or a separator-terminated prefix, so a sibling
  * directory whose name merely starts with the workdir's name
  * ("/tmp/wd-extra" against "/tmp/wd") is correctly treated as outside.
+ *
+ * That string-prefix check alone is not enough, though: it operates on the
+ * syntactically resolved path (node:path's `resolve`, which normalizes
+ * "../" segments but never touches the filesystem) and so does not account
+ * for symlinks. A symlink living INSIDE the workdir that points outside it
+ * (e.g. requesting "linked/secret.txt" where "linked" is a symlink to
+ * /etc) resolves, post-symlink, to somewhere the prefix check never sees —
+ * it would wrongly report that path as contained. So containment is
+ * checked a second time against the REAL (symlink-resolved) path of the
+ * deepest existing ancestor, per realpathDeepestExisting above.
  */
 function resolveWithinWorkdir(
   requestedPath: string,
   workdir: string,
 ): ResolvedPath {
-  const root = resolve(workdir);
+  const root = safeRealpath(resolve(workdir));
   const absolutePath = resolve(root, requestedPath);
 
   // A root that is already a filesystem root ("/", "C:\\") ends in the
   // separator; appending another would produce "//" and reject everything.
   const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
-  const isInside = absolutePath === root || absolutePath.startsWith(prefix);
-  if (!isInside) {
-    return {
-      ok: false,
-      message: `File path "${requestedPath}" resolves to ${absolutePath}, which is outside the flow working directory ${root}`,
-    };
+  const isInside = (candidate: string) =>
+    candidate === root || candidate.startsWith(prefix);
+
+  const outOfBounds: ResolvedPath = {
+    ok: false,
+    message: `File path "${requestedPath}" resolves to ${absolutePath}, which is outside the flow working directory ${root}`,
+  };
+
+  if (!isInside(absolutePath)) {
+    return outOfBounds;
+  }
+
+  const realAncestor = realpathDeepestExisting(absolutePath);
+  if (!isInside(realAncestor)) {
+    return outOfBounds;
   }
 
   return { ok: true, absolutePath };

@@ -76,6 +76,34 @@ async function pollUntilPass(
 
   while (Date.now() < deadline) {
     await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));
+
+    // The sleep above is clamped to land the wake-up at (not past) the
+    // deadline, so the intended final look happens right at the deadline
+    // moment — that at-the-deadline check is deliberate, not a bug. What
+    // IS a bug: a timer that was scheduled to fire at the deadline can, if
+    // the event loop is busy elsewhere, actually resume much later than
+    // that. Evaluating `check()` unconditionally at that point would let a
+    // file that only appeared during that extra, unbudgeted lag slip
+    // through as a pass.
+    //
+    // The two failure modes pull in opposite directions, so the guard has
+    // to draw a deliberate line rather than reject on any overshoot: normal
+    // timer resolution means even a healthy, on-time resume routinely lands
+    // a few milliseconds past `deadline`, and rejecting that too would
+    // silently swallow the at-the-deadline check on nearly every call,
+    // turning "poll until timeout" into "poll until timeout minus one poll
+    // interval" for every caller. So only an overshoot bigger than a full
+    // POLL_INTERVAL — the hallmark of real event-loop lag, not scheduler
+    // noise — counts as the budget having been genuinely spent, and skips
+    // the final evaluation outright rather than trusting a stale-by-design
+    // check. This is a fixed, deadline-relative comparison, not a race
+    // against timer jitter: ordinary jitter (single-digit milliseconds)
+    // never comes close to a whole POLL_INTERVAL, so it can't flip this
+    // branch by accident.
+    if (Date.now() - deadline > POLL_INTERVAL) {
+      break;
+    }
+
     lastResult = await check();
     if (!lastResult) {
       return undefined;

@@ -97,6 +97,46 @@ describe("fileExists", () => {
   });
 });
 
+describe("fileExists: does not evaluate the matcher after a late-resuming timer", () => {
+  it("stays failed when the file only appears during event-loop lag that pushes evaluation well past the deadline", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "appears-during-lag.txt");
+    const timeout = 100;
+
+    // Node/Bun's event loop is single-threaded, so a synchronous busy-wait
+    // reliably blocks every other pending timer for its duration — this is
+    // what stands in for "the process was too busy to run a timer on
+    // schedule" without depending on real, unpredictable scheduler jitter.
+    //
+    // This callback is scheduled to fire at +40ms, well before pollUntilPass's
+    // own clamped sleep (which targets the +100ms deadline) is due. Since
+    // timers fire in order of target time, it runs first, writes the file
+    // immediately (so the file exists well before the deadline in wall-clock
+    // terms — the interesting question is only WHEN the poll loop gets to
+    // observe that), and then busy-blocks for 400ms. That block holds up the
+    // poll loop's own sleep timer, which only gets to fire once the block
+    // releases the thread — i.e. around +440ms, roughly 340ms (more than a
+    // full POLL_INTERVAL) past the +100ms deadline. A loop that evaluates
+    // `check()` unconditionally after waking would see the file and
+    // incorrectly report success at that point; the fixed loop must instead
+    // recognize the overshoot and return the prior failure without
+    // re-checking.
+    setTimeout(() => {
+      writeFileSync(filePath, "appeared while the loop was blocked");
+      const blockUntil = Date.now() + 400;
+      while (Date.now() < blockUntil) {
+        // Busy-wait: deliberately pins the thread so no other timer
+        // (including pollUntilPass's own sleep) can fire during this window.
+      }
+    }, 40);
+
+    const result = await fileExists(filePath, timeout);
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(filePath);
+  });
+});
+
 describe("fileContains", () => {
   it("passes on the first check, without waiting a poll interval, when the file already contains the expected text", async () => {
     const dir = makeTempDir();

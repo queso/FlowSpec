@@ -380,7 +380,16 @@ function detailsFromError(
 ): SchemaIssueDetail[] {
   const seen = new Set<string>();
   return flattenIssues(error.issues, verb).filter((detail) => {
-    const key = `${detail.path.join(".")} ${detail.message}`;
+    // The separator between the joined path and the message must be a
+    // character that can never appear in either half, or two genuinely
+    // different (path, message) pairs could collide into the same key and
+    // get wrongly deduped. NUL (\0) is the one character with that
+    // guarantee: it can't occur in a Zod issue path segment (a JS property
+    // name or array index) or in a Zod-generated message string. Written as
+    // the escape `\0` rather than a raw embedded byte — a literal NUL byte
+    // in the source file makes `grep`/`ripgrep` classify the whole file as
+    // binary, which silently breaks text search over this file.
+    const key = `${detail.path.join(".")}\0${detail.message}`;
     if (seen.has(key)) {
       return false;
     }
@@ -736,15 +745,58 @@ const WebFlowSpecSchema = z
  * means such a caller fails loudly at the narrowing point instead of
  * silently handing CliStep/CliAssertion-typed data that was never actually
  * checked to every use site downstream.
+ *
+ * asCliFlow returns the ORIGINAL `flow`, not CliFlowSpecSchema's parse
+ * result — and that's fine, unlike asWebFlow below. CliFlowSpecSchema's
+ * `surface` field is a bare `z.literal("cli")`: it has no `.default(...)`,
+ * so for `.parse(flow)` to succeed at all, `flow.surface` must ALREADY be
+ * the literal `"cli"` on the input. There is no defaulted/derived value the
+ * parse produces that the input didn't already have, so returning `flow`
+ * unchanged discards nothing.
  */
 export function asCliFlow(flow: FlowSpec): CliFlowSpec {
   CliFlowSpecSchema.parse(flow);
   return flow as CliFlowSpec;
 }
 
+/**
+ * asWebFlow, unlike asCliFlow above, must return the PARSED value rather
+ * than the original `flow` (CodeRabbit review, this PR). WebFlowSpecSchema's
+ * `surface` field is `SurfaceSchema.optional().default("web")` — deliberately
+ * not a bare literal, per that schema's own doc comment, because plenty of
+ * legitimate callers hand it a flow object with no `surface` key at all. The
+ * `.default("web")` only ever takes effect on the value `.parse()` RETURNS;
+ * it does nothing to the object passed in. The previous implementation ran
+ * `WebFlowSpecSchema.parse(flow)` purely for its throwing side effect and
+ * then returned `flow as WebFlowSpec` — so a hand-built flow with no
+ * `surface` key parsed successfully (correctly) but came back with
+ * `surface === undefined` at runtime, while its WebFlowSpec type claimed the
+ * literal `"web"`. That is a real type lie: a caller trusting
+ * `webFlow.surface === "web"` could be wrong about a value TypeScript
+ * insists is web-surface.
+ *
+ * The fix returns `WebFlowSpecSchema.parse(flow)` itself, so the defaulted
+ * `surface` (and everything else the schema validated) is what callers
+ * actually get. This is safe from the "a real z.object() schema silently
+ * drops any key it doesn't declare" risk that would otherwise make a
+ * re-parse dangerous on a production path: WebFlowSpecSchema declares
+ * exactly the five fields FlowSpec itself has (name, description, surface,
+ * setup, steps, expect) — there is no sixth FlowSpec field for it to drop.
+ * `setup`/`steps`/`expect` re-parse through FlowStepSchema/StepAssertionSchema
+ * element-by-element, which reconstructs equivalent objects (same single
+ * key, same value) rather than mutating or dropping anything, since those
+ * are the same schemas FlowSpecSchema's own superRefine already validated
+ * each element against.
+ *
+ * The one behavior change this causes: the returned object is no longer the
+ * same reference as the `flow` argument (a fresh object from `.parse()`).
+ * No production call site (src/runner.ts's runFlow) or test in this repo
+ * relies on that identity — every consumer reads fields off the result, none
+ * compares it by reference to the input — so this is a safe tradeoff for
+ * closing a genuine type lie.
+ */
 export function asWebFlow(flow: FlowSpec): WebFlowSpec {
-  WebFlowSpecSchema.parse(flow);
-  return flow as WebFlowSpec;
+  return WebFlowSpecSchema.parse(flow) as WebFlowSpec;
 }
 
 /**

@@ -486,9 +486,24 @@ async function executeWaitFor(
   // Calculate deadline for retry loop
   const deadline = Date.now() + timeout;
 
-  // Poll loop: sleep, then re-check until found or deadline
+  // Poll loop: sleep (clamped to whatever's left of the budget, so the
+  // wake-up lands at the deadline instead of routinely overshooting it by
+  // a full POLL_INTERVAL), then re-check until found or deadline.
   while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
+    await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));
+
+    // See src/file-matchers.ts's pollUntilPass for the full reasoning
+    // (this loop has the same shape and the same bug): a timer clamped to
+    // wake at the deadline can, under event-loop lag, resume much later
+    // than that, and checking again at that point could accept text that
+    // only appeared during the unbudgeted overrun. Only an overshoot
+    // bigger than a full POLL_INTERVAL is treated as the deadline having
+    // been genuinely blown through — small overshoot is ordinary timer
+    // jitter, and the at-the-deadline check it would otherwise skip is the
+    // intentional last look, not the bug being fixed here.
+    if (Date.now() - deadline > POLL_INTERVAL) {
+      break;
+    }
 
     lastError = await checkTextVisible(text, session);
     if (!lastError) {
@@ -652,9 +667,25 @@ async function executeAssertion(
   // Calculate deadline for retry loop
   const deadline = Date.now() + timeout;
 
-  // Poll loop: sleep, then re-check until pass or deadline
+  // Poll loop: sleep (clamped to whatever's left of the budget, so the
+  // wake-up lands at the deadline instead of routinely overshooting it by
+  // a full POLL_INTERVAL), then re-check until pass or deadline.
   while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
+    await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));
+
+    // See src/file-matchers.ts's pollUntilPass for the full reasoning
+    // (this loop has the same shape and the same bug): a timer clamped to
+    // wake at the deadline can, under event-loop lag, resume much later
+    // than that, and re-checking at that point could accept page state
+    // that only became true during the unbudgeted overrun. Only an
+    // overshoot bigger than a full POLL_INTERVAL is treated as the
+    // deadline having been genuinely blown through — small overshoot is
+    // ordinary timer jitter, and the at-the-deadline check it would
+    // otherwise skip is the intentional last look, not the bug being
+    // fixed here.
+    if (Date.now() - deadline > POLL_INTERVAL) {
+      break;
+    }
 
     // Re-check assertion (re-fetches page state from browser)
     lastError = await checkAssertion(assertion, session);
