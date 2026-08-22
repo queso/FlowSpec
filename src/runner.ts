@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { runCliFlow } from "./cli-runner.js";
 import type {
   FlowError,
@@ -100,26 +101,45 @@ function generateSessionName(): string {
 }
 
 /**
- * Get the path to the agent-browser binary
+ * Get the path to the agent-browser binary.
+ *
+ * Resolves through Node module resolution rather than a hardcoded
+ * `<flowspec>/node_modules/.bin` path, because that layout only exists
+ * under nested installs (pnpm, or flowspec's own repo). Hoisting package
+ * managers (bun, npm) place agent-browser at the consumer root, where the
+ * old path pointed at nothing and every flow died with "Browser command
+ * failed" (#15).
+ *
+ * Preference order: the `.bin` shim beside the resolved package (same
+ * spawn semantics as before), then the package's own bin script, then a
+ * bare `agent-browser` for PATH lookup.
+ *
+ * @param fromUrl module URL to resolve from — overridable for tests
  */
-function getAgentBrowserPath(): string {
-  // Try to find agent-browser in node_modules/.bin
-  // This works whether we're running from src/ or from dist/
-  const currentFile = import.meta.url;
-  const currentDir = dirname(fileURLToPath(currentFile));
+export function getAgentBrowserPath(fromUrl: string = import.meta.url): string {
+  try {
+    const require = createRequire(fromUrl);
+    const pkgJsonPath = require.resolve("agent-browser/package.json");
+    const pkgDir = dirname(pkgJsonPath);
 
-  // From src/ it's ../node_modules/.bin/agent-browser
-  // From dist/ it's ../node_modules/.bin/agent-browser
-  const binPath = join(
-    currentDir,
-    "..",
-    "node_modules",
-    ".bin",
-    "agent-browser",
-  );
+    // The .bin shim lives in the node_modules that contains the package.
+    const shimPath = join(dirname(pkgDir), ".bin", "agent-browser");
+    if (existsSync(shimPath)) return shimPath;
 
-  // If that doesn't work, fall back to npx
-  return binPath;
+    const pkg = require(pkgJsonPath) as {
+      bin?: string | Record<string, string>;
+    };
+    const bin =
+      typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.["agent-browser"];
+    if (bin) {
+      const binPath = join(pkgDir, bin);
+      if (existsSync(binPath)) return binPath;
+    }
+  } catch {
+    // Not resolvable as a module — fall through to PATH lookup.
+  }
+
+  return "agent-browser";
 }
 
 /**

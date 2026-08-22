@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    branches: [main]    # semantic-release determines if a new version is needed
+  workflow_dispatch:     # manual re-run (only releases if new commits warrant it)
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write        # npm provenance
+
+jobs:
+  # ── Semantic Release ────────────────────────────────────────────────
+  # Analyzes conventional commits since the last tag, determines the next
+  # version, publishes to npm, and creates a GitHub Release + git tag.
+  # No release-worthy commits → no release (idempotent).
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.11"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "lts/*"
+
+      # Trusted publishing (OIDC) needs a current npm; the Node-bundled one
+      # may predate support. The diagnostic line makes the next auth failure
+      # self-explaining: no ACTIONS_ID_TOKEN vars → workflow context problem;
+      # vars present but publish ENEEDAUTHs → npmjs.com trusted-publisher
+      # config mismatch (must be repo queso/FlowSpec, workflow release.yml).
+      - name: Update npm for trusted publishing
+        run: |
+          npm install -g npm@latest
+          echo "node=$(node --version) npm=$(npm --version)"
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "OIDC vars: present"
+          else
+            echo "OIDC vars: MISSING — id-token permission not reaching this job"
+          fi
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun run test -- --run
+
+      - name: Build
+        run: bun run build
+
+      - uses: cycjimmy/semantic-release-action@16ca923e6ccbb50770c415a0ccd43709a8c5f7a4 # v4.2.2
+        id: release
+        with:
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+            @semantic-release/release-notes-generator
+            @semantic-release/npm
+            @semantic-release/exec
+            @semantic-release/github
+            @semantic-release/git
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release result
+        if: steps.release.outputs.new_release_published == 'true'
+        run: echo "Released v${{ steps.release.outputs.new_release_version }} to npm"
