@@ -638,6 +638,37 @@ describe("file assertion paths are confined to the workdir", () => {
     expect(result?.message.toLowerCase()).toContain("outside");
   });
 
+  // Regression coverage for the follow-up CodeRabbit finding on the fix
+  // above: realpathDeepestExisting originally walked upward only on ENOENT
+  // and returned the UNRESOLVED path on any other error, which failed open
+  // — that path is the lexically-resolved one the caller already confirmed
+  // sits under the root, so containment accepted it having canonicalized
+  // nothing at all.
+  //
+  // This is the concrete bypass, and it needs no special permissions to
+  // reproduce: "linked" is a symlink out of the workdir and "blocker" is a
+  // regular FILE, so realpathSync on "linked/blocker/target.txt" fails with
+  // ENOTDIR rather than ENOENT — and the symlink is never resolved or
+  // noticed. (An unreadable intermediate directory hides a symlink the same
+  // way via EACCES, but that variant can't be tested as root.)
+  it("rejects a path whose symlink escape is hidden behind a non-ENOENT realpath failure", async () => {
+    const workdir = makeTempDir();
+    const outside = makeTempDir();
+    // A regular file, not a directory: traversing THROUGH it yields ENOTDIR.
+    writeFileSync(join(outside, "blocker"), "i am a regular file");
+    symlinkSync(outside, join(workdir, "linked"));
+
+    const result = await evaluateCliAssertion(
+      { file_exists: "linked/blocker/target.txt" },
+      lastStep(),
+      workdir,
+      0,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message.toLowerCase()).toContain("outside");
+  });
+
   // Regression guard: the symlink-traversal fix must not break the
   // retry-for-a-not-yet-created-file contract. realpathSync throws ENOENT
   // on a path that doesn't exist yet, so a naive fix that realpath'd the

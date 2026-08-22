@@ -76,18 +76,28 @@ function realpathDeepestExisting(absolutePath: string): string {
   for (;;) {
     try {
       return realpathSync(current);
-    } catch (error) {
+    } catch {
       const parent = dirname(current);
-      const isMissing = (error as NodeJS.ErrnoException)?.code === "ENOENT";
-      if (!isMissing || parent === current) {
-        // Either a non-ENOENT error (permissions, a path component that
-        // turned out not to be a directory, etc.) or we've walked all the
-        // way to a filesystem root without resolving anything. Return the
-        // unresolved path as-is rather than looping forever or throwing —
-        // the containment check downstream fails closed against it if it
-        // doesn't match the (already-realpath'd) workdir root.
+      if (parent === current) {
+        // Walked all the way to a filesystem root without resolving
+        // anything. Return the unresolved path rather than looping forever
+        // or throwing; the containment check downstream compares it against
+        // the already-realpath'd workdir root.
         return current;
       }
+      // Keep walking up on ANY failure, not just ENOENT (CodeRabbit review,
+      // this PR). Returning the unresolved path on a non-ENOENT error would
+      // fail OPEN, not closed: `current` is still the lexically-resolved
+      // path, which the caller has already confirmed sits under the root, so
+      // the containment check would trivially accept it having canonicalized
+      // nothing. That is exactly the bypass this function exists to prevent
+      // — e.g. requesting "linked/blocker/target.txt" where "linked" is a
+      // symlink out of the workdir and "blocker" is a regular file makes
+      // realpathSync fail with ENOTDIR (not ENOENT), and the symlink would
+      // never be resolved or noticed. EACCES on an unreadable intermediate
+      // directory hides a symlink the same way. Walking up instead means the
+      // ancestor that finally resolves is genuinely canonicalized, so the
+      // containment check always runs against real data.
       current = parent;
     }
   }
