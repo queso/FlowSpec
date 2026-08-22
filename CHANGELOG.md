@@ -47,6 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Displays monorepo warnings with detected markers
   - Reports nearby existing FlowSpec configuration and specs directories
 
+- **CLI surface adapter** (PRD-0007): a flow can now declare `surface: cli` and drive a command-line tool instead of a browser — no `agent-browser` involved, and a CLI-only project doesn't need it installed at all. A flow with no `surface` key, or an explicit `surface: web`, parses and runs exactly as before; the entire existing web test suite passed unmodified throughout this mission. Mixing web and CLI verbs in one flow is a parse error naming the offending verb and the flow's surface (#800, #812).
+  - **CLI step grammar**: `run` (a whitespace-split string or an untouched array), plus optional `stdin`, `env`, `timeout`, and `expect_exit` (#800).
+  - **No-shell process execution** (`src/exec.ts`): commands are spawned directly via argv — never through a shell — so shell interpolation is structurally impossible rather than filtered or escaped. A hung command is killed (`SIGTERM`, escalating to `SIGKILL`) at its timeout, and stdout/stderr are captured independently up to a configurable byte limit, with truncation made visible (#801, #806).
+  - **Surface-agnostic matchers** (`src/matchers.ts`): reusable `contains`, `regex`, and dot-path JSON comparison, reporting structured failures instead of throwing (#802).
+  - **Retryable file matchers** (`src/file-matchers.ts`): file-existence and file-content checks that poll within the flow's timeout, for files an async process may still be writing (#803).
+  - **Per-flow working directory** (`src/workdir.ts`): each CLI flow gets a fresh temporary directory, deleted on success and kept (with its path printed in the failure report) on failure — the CLI analog of the web surface's failure screenshot (#804).
+  - **Eight CLI assertions**: `exit_code`, `stdout_contains`, `stdout_matches`, `stderr_contains`, `stderr_matches`, `file_exists`, `file_contains`, and `json_output`, evaluated against the last run step's captured result (`src/cli-assertions.ts`), plus widened `FlowError` fields carrying exit code, stdio excerpt, and working directory (#805, #809).
+  - **CLI runner** (`src/cli-runner.ts`): fail-fast exit-code semantics — a non-final step's exit code must match its `expect_exit` (default 0) or the flow fails immediately, while the final step's exit code is only fatal if it declares its own `expect_exit`, making "this command should fail" a first-class spec. A CLI flow can also declare its own flow-level `setup` phase, in the same grammar, run before `steps` in the same working directory; a setup failure is reported as a setup failure, not a step failure (#808, #811).
+  - **`runFlow` dispatches on surface** (`src/runner.ts`): the CLI path never resolves or launches a browser (#812).
+  - **Reporter renders CLI failures** (`src/reporter.ts`) alongside web failures in one summary, naming the command, its exit code, and what its output actually was (#810).
+  - **Config gains `cwd` and `captureLimit`** (`src/config.ts`): CLI-surface-only config keys — a configured working directory and an output capture limit — that now survive the CLI merge instead of being silently dropped; both are ignored by web flows, and config-level `setup` stays web-only (#807).
+
+- **Dogfooding**: FlowSpec now specs its own `flowspec init` command. `specs/init.flow.yaml` is a protected, human-authored `surface: cli` spec (the repo's own PreToolUse hook blocks agent edits to `specs/**/*.flow.yaml` — see `adr/0005`) exercised by `bun run test:e2e`, which builds the CLI, links the `flowspec` binary, and runs the specs directory — locally and now as a CI step. This is the first time `test:e2e` has passed (#815, #816).
+
 ### Changed
 
 - Config files that fail to load or validate — including an unset `${VAR}` reference — now consistently exit with code **2** and print the underlying message without an `"Unexpected error:"` prefix, before any flow is parsed or browser session opened. Exit code **1** continues to mean flows ran and at least one failed; **0** means all flows passed. This is now documented explicitly in the README's exit code table.
@@ -60,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README: new "Setup: Shared Steps Before Every Flow" and "${VAR} Interpolation" sections under Configuration File, plus a "Setup (Optional)" section under Flow File Format, each with a worked auth-gated preview deployment example.
 - `docs/specification.md`: the flow schema reference now lists `setup` as an optional flow field, so the spec format documentation no longer contradicts the shipped schema.
 - Added ADRs recording the mission's key design decisions: skipped flows are represented as an ordinary `FlowResult` with a `skipped` flag rather than a new status enum (`adr/0001`); config faults (parse/validation/unset `${VAR}`) exit 2 (`adr/0002`); and `${VAR}` interpolation is scoped to committed config, not flow specs, keeping specs immutable (`adr/0003`).
+
+- **CLI surface documentation** (#814): README gains a new "CLI Flows (`surface: cli`)" section — step grammar, the no-shell rule and its two escape hatches, all eight assertions, working-directory semantics, CLI-flow `setup`, and the `expect_exit` fail-fast/final-step rule — plus a `cwd`/`captureLimit` subsection under Configuration File. `docs/specification.md` gets the matching schema reference, a full worked example, and simplified CLI-runner-dispatch pseudocode under Execution Modes.
+- Added ADRs recording this mission's key design decisions: `expect_exit` is honored on every step, but only the final step's *absence* of `expect_exit` makes its exit code non-fatal (`adr/0004`); protected specs such as `specs/init.flow.yaml` are drafted outside `specs/` and moved in by a human, since the repo's own PreToolUse hook blocks agent writes there (`adr/0005`); and `specsDir`-based path discovery for `flowspec run` stays out of scope for this mission (`adr/0006`).
 
 ## [0.1.2] - 2026-02-20
 

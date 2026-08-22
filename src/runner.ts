@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { runCliFlow } from "./cli-runner.js";
 import type {
   FlowError,
   FlowResult,
@@ -9,6 +10,7 @@ import type {
   StepAction,
   StepAssertion,
 } from "./types.js";
+import { asCliFlow, asWebFlow } from "./types.js";
 
 // Declare minimal Bun types for TypeScript when running in Bun runtime
 declare global {
@@ -36,7 +38,18 @@ declare global {
  */
 export interface RunnerOptions {
   baseUrl?: string;
+  /**
+   * Assertion-retry budget, in milliseconds: how long an assertion keeps
+   * being re-checked before it fails. Never a process deadline — a CLI run
+   * step's kill deadline is `stepTimeout`.
+   */
   timeout?: number;
+  /**
+   * CLI-surface process-kill deadline for a single `run` step, in
+   * milliseconds. Web flows ignore this. Absent falls back to
+   * DEFAULT_STEP_TIMEOUT (src/config.ts), not to `timeout`.
+   */
+  stepTimeout?: number;
   setup?: FlowStep[];
   headers?: Record<string, string>;
   /**
@@ -46,6 +59,10 @@ export interface RunnerOptions {
    * "all" is the deliberate opt-out — context-wide, every request, every host.
    */
   headersScope?: "origin" | "all";
+  /** CLI-surface working-directory override. Web flows ignore this. */
+  cwd?: string;
+  /** CLI-surface per-stream capture ceiling, in bytes. Web flows ignore this. */
+  captureLimit?: number;
 }
 
 /**
@@ -469,9 +486,24 @@ async function executeWaitFor(
   // Calculate deadline for retry loop
   const deadline = Date.now() + timeout;
 
-  // Poll loop: sleep, then re-check until found or deadline
+  // Poll loop: sleep (clamped to whatever's left of the budget, so the
+  // wake-up lands at the deadline instead of routinely overshooting it by
+  // a full POLL_INTERVAL), then re-check until found or deadline.
   while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
+    await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));
+
+    // See src/file-matchers.ts's pollUntilPass for the full reasoning
+    // (this loop has the same shape and the same bug): a timer clamped to
+    // wake at the deadline can, under event-loop lag, resume much later
+    // than that, and checking again at that point could accept text that
+    // only appeared during the unbudgeted overrun. Only an overshoot
+    // bigger than a full POLL_INTERVAL is treated as the deadline having
+    // been genuinely blown through — small overshoot is ordinary timer
+    // jitter, and the at-the-deadline check it would otherwise skip is the
+    // intentional last look, not the bug being fixed here.
+    if (Date.now() - deadline > POLL_INTERVAL) {
+      break;
+    }
 
     lastError = await checkTextVisible(text, session);
     if (!lastError) {
@@ -635,9 +667,25 @@ async function executeAssertion(
   // Calculate deadline for retry loop
   const deadline = Date.now() + timeout;
 
-  // Poll loop: sleep, then re-check until pass or deadline
+  // Poll loop: sleep (clamped to whatever's left of the budget, so the
+  // wake-up lands at the deadline instead of routinely overshooting it by
+  // a full POLL_INTERVAL), then re-check until pass or deadline.
   while (Date.now() < deadline) {
-    await sleep(POLL_INTERVAL);
+    await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));
+
+    // See src/file-matchers.ts's pollUntilPass for the full reasoning
+    // (this loop has the same shape and the same bug): a timer clamped to
+    // wake at the deadline can, under event-loop lag, resume much later
+    // than that, and re-checking at that point could accept page state
+    // that only became true during the unbudgeted overrun. Only an
+    // overshoot bigger than a full POLL_INTERVAL is treated as the
+    // deadline having been genuinely blown through — small overshoot is
+    // ordinary timer jitter, and the at-the-deadline check it would
+    // otherwise skip is the intentional last look, not the bug being
+    // fixed here.
+    if (Date.now() - deadline > POLL_INTERVAL) {
+      break;
+    }
 
     // Re-check assertion (re-fetches page state from browser)
     lastError = await checkAssertion(assertion, session);
@@ -730,6 +778,27 @@ export async function runFlow(
   flow: FlowSpec,
   options?: RunnerOptions,
 ): Promise<FlowResult> {
+  // Surface dispatch: the ABSOLUTE FIRST thing runFlow does, before a
+  // browser session name is even generated, before headers are validated —
+  // a CLI flow must never resolve or launch agent-browser. runCliFlow owns
+  // the whole CLI lifecycle (working directory, steps, assertions); the
+  // web path below is completely untouched for surface: "web" (or absent).
+  if (flow.surface === "cli") {
+    // The one place the surface is decided is the one place the flow is
+    // narrowed to its CLI shape (see asCliFlow) — the CLI runner then works
+    // in CliStep/CliAssertion terms throughout, with no per-use casts.
+    return runCliFlow(asCliFlow(flow), {
+      cwd: options?.cwd,
+      timeout: options?.timeout,
+      stepTimeout: options?.stepTimeout,
+      captureLimit: options?.captureLimit,
+    });
+  }
+
+  // Everything past the dispatch is the web path, so the flow is narrowed to
+  // the web vocabulary once, here, rather than at each step/assertion use.
+  const webFlow = asWebFlow(flow);
+
   const startTime = Date.now();
   const baseUrl = options?.baseUrl ?? DEFAULT_BASE_URL;
   const timeout = options?.timeout ?? DEFAULT_TIMEOUT;
@@ -783,7 +852,7 @@ export async function runFlow(
     // config/CLI-level one entirely (no merging). An empty array is not
     // nullish, so an explicit `setup: []` on the flow opts out even when
     // options.setup is supplied.
-    const setupSteps = flow.setup ?? options?.setup;
+    const setupSteps = webFlow.setup ?? options?.setup;
 
     // Execute setup steps (if any) in the same browser session, before the
     // flow's own steps, so state established during setup (e.g. an auth
@@ -815,8 +884,8 @@ export async function runFlow(
     }
 
     // Execute all steps
-    for (let stepIndex = 0; stepIndex < flow.steps.length; stepIndex++) {
-      const step = flow.steps[stepIndex];
+    for (let stepIndex = 0; stepIndex < webFlow.steps.length; stepIndex++) {
+      const step = webFlow.steps[stepIndex];
 
       try {
         await executeStep(step, baseUrl, session, timeout, scopedHeaders);
@@ -837,7 +906,7 @@ export async function runFlow(
     }
 
     // Execute all assertions with retry/polling
-    for (const assertion of flow.expect) {
+    for (const assertion of webFlow.expect) {
       const assertionError = await executeAssertion(
         assertion,
         session,

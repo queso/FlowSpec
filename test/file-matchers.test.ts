@@ -1,0 +1,319 @@
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { DEFAULT_CAPTURE_LIMIT } from "../src/exec";
+import { fileContains, fileExists } from "../src/file-matchers";
+import { POLL_INTERVAL } from "../src/runner";
+
+/**
+ * Tests for WI-803: retryable file-existence and file-content matchers.
+ *
+ * Contract pinned by the work item:
+ *  - fileExists(absolutePath, timeout?): Promise<MatchFailure | undefined>
+ *  - fileContains(absolutePath, expected, timeout?): Promise<MatchFailure | undefined>
+ *  - Both follow executeAssertion's retry shape (src/runner.ts:599): a
+ *    zero-overhead first check, then poll every POLL_INTERVAL until a
+ *    deadline, returning the last failure. Timeout 0 or absent means
+ *    exactly one evaluation, no polling, immediate return.
+ *  - Callers pass an already-resolved absolute path; these functions do
+ *    not resolve relative paths themselves.
+ *  - Failure messages name the absolute path (both matchers) and, for
+ *    fileContains, the expected text too.
+ */
+
+const tempDirs: string[] = [];
+
+function makeTempDir(): string {
+  const dir = realpathSync(
+    mkdtempSync(join(tmpdir(), "flowspec-file-matcher-")),
+  );
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+describe("fileExists", () => {
+  it("passes on the first check, without waiting a poll interval, when the file already exists", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "already-there.txt");
+    writeFileSync(filePath, "content");
+
+    const start = Date.now();
+    const result = await fileExists(filePath, 5000);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeUndefined();
+    expect(elapsed).toBeLessThan(POLL_INTERVAL);
+  });
+
+  it("passes once the file appears mid-window, before the deadline elapses", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "appears-later.txt");
+
+    const start = Date.now();
+    const resultPromise = fileExists(filePath, 1000);
+    setTimeout(() => writeFileSync(filePath, "now it exists"), 300);
+    const result = await resultPromise;
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeUndefined();
+    expect(elapsed).toBeGreaterThanOrEqual(200);
+    expect(elapsed).toBeLessThan(900);
+  });
+
+  it("fails after the deadline when the file never appears, naming the resolved absolute path", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "never-appears.txt");
+
+    const result = await fileExists(filePath, POLL_INTERVAL + 50);
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(filePath);
+  });
+
+  it("with a timeout shorter than POLL_INTERVAL, returns close to the configured timeout rather than overshooting by a full poll interval", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "never-appears-short-timeout.txt");
+    const timeout = 50;
+    expect(timeout).toBeLessThan(POLL_INTERVAL);
+
+    const start = Date.now();
+    const result = await fileExists(filePath, timeout);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeDefined();
+    // A buggy loop always sleeps a full POLL_INTERVAL before re-checking
+    // the deadline, so it returns after ~POLL_INTERVAL (250ms) even though
+    // the caller only asked to wait 50ms. The fix clamps the final sleep to
+    // the remaining time on the deadline, so elapsed should stay close to
+    // the configured timeout.
+    expect(elapsed).toBeLessThan(100);
+  });
+});
+
+describe("fileExists: does not evaluate the matcher after a late-resuming timer", () => {
+  it("stays failed when the file only appears during event-loop lag that pushes evaluation well past the deadline", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "appears-during-lag.txt");
+    const timeout = 100;
+
+    // Node/Bun's event loop is single-threaded, so a synchronous busy-wait
+    // reliably blocks every other pending timer for its duration — this is
+    // what stands in for "the process was too busy to run a timer on
+    // schedule" without depending on real, unpredictable scheduler jitter.
+    //
+    // This callback is scheduled to fire at +40ms, well before pollUntilPass's
+    // own clamped sleep (which targets the +100ms deadline) is due. Since
+    // timers fire in order of target time, it runs first, writes the file
+    // immediately (so the file exists well before the deadline in wall-clock
+    // terms — the interesting question is only WHEN the poll loop gets to
+    // observe that), and then busy-blocks for 400ms. That block holds up the
+    // poll loop's own sleep timer, which only gets to fire once the block
+    // releases the thread — i.e. around +440ms, roughly 340ms (more than a
+    // full POLL_INTERVAL) past the +100ms deadline. A loop that evaluates
+    // `check()` unconditionally after waking would see the file and
+    // incorrectly report success at that point; the fixed loop must instead
+    // recognize the overshoot and return the prior failure without
+    // re-checking.
+    setTimeout(() => {
+      writeFileSync(filePath, "appeared while the loop was blocked");
+      const blockUntil = Date.now() + 400;
+      while (Date.now() < blockUntil) {
+        // Busy-wait: deliberately pins the thread so no other timer
+        // (including pollUntilPass's own sleep) can fire during this window.
+      }
+    }, 40);
+
+    const result = await fileExists(filePath, timeout);
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(filePath);
+  });
+});
+
+describe("fileContains", () => {
+  it("passes on the first check, without waiting a poll interval, when the file already contains the expected text", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "content.txt");
+    writeFileSync(filePath, "hello world, this has the needle inside");
+
+    const start = Date.now();
+    const result = await fileContains(filePath, "needle", 5000);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeUndefined();
+    expect(elapsed).toBeLessThan(POLL_INTERVAL);
+  });
+
+  it("passes once the expected text is written mid-window, before the deadline elapses", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "written-later.txt");
+    writeFileSync(filePath, "not yet");
+
+    const start = Date.now();
+    const resultPromise = fileContains(filePath, "the marker", 1000);
+    setTimeout(
+      () => writeFileSync(filePath, "now contains the marker text"),
+      300,
+    );
+    const result = await resultPromise;
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeUndefined();
+    expect(elapsed).toBeGreaterThanOrEqual(200);
+    expect(elapsed).toBeLessThan(900);
+  });
+
+  it("fails after the deadline with the wrong content, naming the resolved path and the expected text", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "wrong-content.txt");
+    writeFileSync(filePath, "irrelevant content");
+
+    const result = await fileContains(
+      filePath,
+      "the missing needle",
+      POLL_INTERVAL + 50,
+    );
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(filePath);
+    expect(result?.message).toContain("the missing needle");
+  });
+
+  it("fails after the deadline when the file itself never appears, naming the resolved path", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "does-not-exist.txt");
+
+    const result = await fileContains(filePath, "anything", POLL_INTERVAL + 50);
+
+    expect(result).toBeDefined();
+    expect(result?.message).toContain(filePath);
+  });
+});
+
+describe("fileContains: bounded read", () => {
+  it("reads at most DEFAULT_CAPTURE_LIMIT bytes, so content past the cap is not matched", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "oversized.txt");
+    // Filler up to exactly the cap, then a sentinel that lives entirely
+    // beyond it. An unbounded readFile slurps the whole file and matches
+    // the sentinel; a capped read cannot see it.
+    writeFileSync(
+      filePath,
+      `${"f".repeat(DEFAULT_CAPTURE_LIMIT)}PAST_THE_CAP_SENTINEL`,
+    );
+
+    const result = await fileContains(filePath, "PAST_THE_CAP_SENTINEL", 0);
+
+    expect(result).toBeDefined();
+  });
+
+  it("still matches content that falls inside the cap", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "within-cap.txt");
+    writeFileSync(filePath, `${"f".repeat(1024)}INSIDE_THE_CAP`);
+
+    const result = await fileContains(filePath, "INSIDE_THE_CAP", 0);
+
+    expect(result).toBeUndefined();
+  });
+});
+
+describe("zero or absent timeout: exactly one evaluation, no polling", () => {
+  it("fileExists with timeout 0 fails immediately even if the file appears moments later", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "appears-too-late.txt");
+
+    const start = Date.now();
+    const resultPromise = fileExists(filePath, 0);
+    // Never actually meant to fire: timeout 0 resolves almost instantly,
+    // well before this 50ms timer would — it exists only to prove the
+    // early result didn't wait for it. Left uncleared, it fires later
+    // (possibly after this test's own afterEach has deleted `dir`),
+    // throwing an ENOENT that gets misattributed to whatever test happens
+    // to be running concurrently at that moment.
+    const staleTimer = setTimeout(
+      () => writeFileSync(filePath, "too late"),
+      50,
+    );
+    const result = await resultPromise;
+    const elapsed = Date.now() - start;
+    clearTimeout(staleTimer);
+
+    expect(result).toBeDefined();
+    expect(elapsed).toBeLessThan(POLL_INTERVAL);
+  });
+
+  it("fileExists with an absent timeout fails immediately for a missing file", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "absent-timeout.txt");
+
+    const start = Date.now();
+    const result = await fileExists(filePath);
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeDefined();
+    expect(elapsed).toBeLessThan(POLL_INTERVAL);
+  });
+
+  it("fileExists with timeout 0 still passes immediately when the file already exists", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "already-there-zero.txt");
+    writeFileSync(filePath, "here");
+
+    const result = await fileExists(filePath, 0);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("fileContains with timeout 0 fails immediately even if matching content is written moments later", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "content-too-late.txt");
+    writeFileSync(filePath, "not yet");
+
+    const start = Date.now();
+    const resultPromise = fileContains(filePath, "the marker", 0);
+    // Same rationale as the fileExists timeout-0 test above: never meant
+    // to actually fire, and left uncleared it can write to `dir` after
+    // this test's own afterEach has already removed it.
+    const staleTimer = setTimeout(
+      () => writeFileSync(filePath, "now contains the marker"),
+      50,
+    );
+    const result = await resultPromise;
+    const elapsed = Date.now() - start;
+    clearTimeout(staleTimer);
+
+    expect(result).toBeDefined();
+    expect(elapsed).toBeLessThan(POLL_INTERVAL);
+  });
+
+  it("fileContains with an absent timeout fails immediately for missing content", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "absent-timeout-content.txt");
+    writeFileSync(filePath, "wrong content");
+
+    const start = Date.now();
+    const result = await fileContains(filePath, "needle");
+    const elapsed = Date.now() - start;
+
+    expect(result).toBeDefined();
+    expect(elapsed).toBeLessThan(POLL_INTERVAL);
+  });
+
+  it("fileContains with timeout 0 still passes immediately when the expected text is already present", async () => {
+    const dir = makeTempDir();
+    const filePath = join(dir, "already-there-zero-content.txt");
+    writeFileSync(filePath, "the marker is right here");
+
+    const result = await fileContains(filePath, "the marker", 0);
+
+    expect(result).toBeUndefined();
+  });
+});

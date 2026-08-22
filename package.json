@@ -35,7 +35,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
-    "test:e2e": "flowspec run"
+    "pretest:e2e": "bun run build && chmod +x dist/index.js && mkdir -p node_modules/.bin && ln -sf ../../dist/index.js node_modules/.bin/flowspec",
+    "test:e2e": "flowspec run specs/"
   },
   "dependencies": {
     "agent-browser": "0.9.3",
