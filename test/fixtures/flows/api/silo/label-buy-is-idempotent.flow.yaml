@@ -1,16 +1,18 @@
 name: label-buy-is-idempotent
-description: A replayed buy returns the first result without calling the platform again
+description: |
+  A replayed buy returns the first result without calling the platform again.
+  The platform's call count is filtered by this flow's own order id, so calls
+  made by other flows do not change it. RUN_ID makes the order id and the
+  idempotency key unique per run; it is listed in publicEnv, so it is not
+  redacted from failure output.
 surface: api
 steps:
-  - request: {post: "{env.PLATFORM_FAKE_URL}/__reset"}
-    expect:
-      - status: 200
   - request:
       post: /tiktok/arcane/labels
       headers:
         Authorization: "Bearer {env.PORTER_BUY_KEY}"
-        Idempotency-Key: e2e-buy-1
-      json: {orderIds: ["576001"], weight: {value: "1.2", unit: "LB"}}
+        Idempotency-Key: "e2e-buy-{env.RUN_ID}"
+      json: {orderIds: ["576001-{env.RUN_ID}"], weight: {value: "1.2", unit: "LB"}}
     capture: {package_id: "$.packageId"}
     expect:
       - status: 200
@@ -18,12 +20,19 @@ steps:
       post: /tiktok/arcane/labels
       headers:
         Authorization: "Bearer {env.PORTER_BUY_KEY}"
-        Idempotency-Key: e2e-buy-1
-      json: {orderIds: ["576001"], weight: {value: "1.2", unit: "LB"}}
+        Idempotency-Key: "e2e-buy-{env.RUN_ID}"
+      json: {orderIds: ["576001-{env.RUN_ID}"], weight: {value: "1.2", unit: "LB"}}
     expect:
       - status: 200
       - header: {name: "Idempotent-Replayed", equals: "true"}
       - json: {path: "$.packageId", equals: "{package_id}"}
-  - request: {get: "{env.PLATFORM_FAKE_URL}/__calls?path=/fulfillment/202309/packages"}
+  # The count must not change after the replay, so a wrong count fails at
+  # once instead of waiting out the retry budget.
+  - request:
+      get: "{env.PLATFORM_FAKE_URL}/__calls"
+      query:
+        path: /fulfillment/202309/packages
+        orderId: "576001-{env.RUN_ID}"
+    timeout: 0
 expect:
   - json: {path: "$.count", equals: 1}

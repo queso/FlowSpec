@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parseFlowFile } from "../src/parser";
 import {
   BUY_SCOPE,
   createSiloFixture,
+  PLATFORM_PACKAGES_PATH,
   QUOTE_SCOPE,
   SHOPIFY_PENDING_POLLS,
 } from "./api-server";
@@ -30,17 +32,24 @@ const LATE_DIR = join(FLOWS_DIR, "silo-late");
 const QUOTE_KEY = "porter_quote_only_key_01";
 const BUY_KEY = "porter_quote_buy_key_02";
 
+/**
+ * The config a silo-style run uses: the platform URL and the run id are
+ * not secrets, so failure output shows them.
+ */
+const CONFIG = "publicEnv: [PLATFORM_FAKE_URL, RUN_ID]\n";
+
 function runCli(
   path: string,
   env: Record<string, string>,
   baseUrl: string,
+  cwd: string,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolve) => {
     const child = spawn(
       "bun",
       ["run", CLI_PATH, "run", path, "--base-url", baseUrl],
       {
-        cwd: join(__dirname, ".."),
+        cwd,
         env: { ...process.env, ...env },
         timeout: 25000,
       },
@@ -77,6 +86,7 @@ describe("silo example flows", () => {
       keys: { [QUOTE_KEY]: [QUOTE_SCOPE], [BUY_KEY]: [QUOTE_SCOPE, BUY_SCOPE] },
     });
     let env: Record<string, string>;
+    let cwd: string;
 
     beforeAll(async () => {
       await fixture.start();
@@ -84,16 +94,29 @@ describe("silo example flows", () => {
         PORTER_QUOTE_KEY: QUOTE_KEY,
         PORTER_BUY_KEY: BUY_KEY,
         PLATFORM_FAKE_URL: fixture.platformUrl,
+        RUN_ID: "r20261031",
       };
+      cwd = mkdtempSync(join(tmpdir(), "flowspec-silo-"));
+      writeFileSync(join(cwd, "flowspec.config.yaml"), CONFIG);
     });
 
     afterAll(async () => {
       await fixture.stop();
+      rmSync(cwd, { recursive: true, force: true });
     });
 
     it("the passing flows all pass", async () => {
       fixture.resetObservations();
-      const result = await runCli(PASSING_DIR, env, fixture.porterUrl);
+      // Another flow's buy, already recorded on the platform. The
+      // idempotency flow counts only calls for its own order id, so this
+      // must not change its count.
+      await fetch(`${fixture.platformUrl}${PLATFORM_PACKAGES_PATH}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderIds: ["unrelated-order"] }),
+      });
+
+      const result = await runCli(PASSING_DIR, env, fixture.porterUrl, cwd);
 
       expect(result.stderr).toBe("");
       expect(result.exitCode).toBe(0);
@@ -127,7 +150,7 @@ describe("silo example flows", () => {
 
     it("the timeout: 0 check on a late label fails after one lookup", async () => {
       fixture.resetObservations();
-      const result = await runCli(LATE_DIR, env, fixture.porterUrl);
+      const result = await runCli(LATE_DIR, env, fixture.porterUrl, cwd);
 
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toContain("✗ tiktok-label-exists-immediately");

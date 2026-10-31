@@ -12,8 +12,8 @@
  *   PURCHASED over a few polls. A TikTok label record appears late: the
  *   first lookup after the buy answers 404.
  * - platform: a fake TikTok/Shopify platform that records the calls porter
- *   makes to it. `GET /__calls?path=` counts them and `POST /__reset`
- *   clears them.
+ *   makes to it. `GET /__calls?path=&orderId=` counts them (orderId is
+ *   optional) and `POST /__reset` clears them.
  *
  * porter also counts every request it receives (requestCount), which is how
  * tests prove a POST was sent exactly once, and serves a few `/__test/*`
@@ -105,10 +105,24 @@ function createPlatformApp(): Express {
     res.json({ packageId: `pkg_${String(nextPackage++).padStart(4, "0")}` });
   });
 
+  // `orderId` narrows the count to calls whose body lists that order, so a
+  // flow can count only its own calls whatever other flows have done.
   app.get("/__calls", (req, res) => {
     const path = typeof req.query.path === "string" ? req.query.path : "";
-    const matching = calls.filter((call) => call.path === path);
-    res.json({ path, count: matching.length, calls: matching });
+    const orderId =
+      typeof req.query.orderId === "string" ? req.query.orderId : undefined;
+    const matching = calls.filter(
+      (call) =>
+        call.path === path &&
+        (orderId === undefined ||
+          (call.body as { orderIds?: unknown[] })?.orderIds?.includes(orderId)),
+    );
+    res.json({
+      path,
+      orderId: orderId ?? null,
+      count: matching.length,
+      calls: matching,
+    });
   });
 
   app.post("/__reset", (_req, res) => {

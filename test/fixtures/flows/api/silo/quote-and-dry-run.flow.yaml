@@ -4,9 +4,6 @@ description: |
   reports what it would buy without calling the platform.
 surface: api
 steps:
-  - request: {post: "{env.PLATFORM_FAKE_URL}/__reset"}
-    expect:
-      - status: 200
   - request:
       post: /tiktok/arcane/labels/quote
       headers:
@@ -26,6 +23,9 @@ steps:
       - status: 200
       - json: {path: "$.dryRun", equals: true}
       - json: {path: "$.wouldBuy.orderIds", equals: ["576001"]}
-  - request: {get: "{env.PLATFORM_FAKE_URL}/__calls?path=/fulfillment/202309/packages"}
+  - request:
+      get: "{env.PLATFORM_FAKE_URL}/__calls"
+      query: {path: /fulfillment/202309/packages, orderId: "576001"}
+    timeout: 0
 expect:
   - json: {path: "$.count", equals: 0}

@@ -4,9 +4,6 @@ description: |
   called.
 surface: api
 steps:
-  - request: {post: "{env.PLATFORM_FAKE_URL}/__reset"}
-    expect:
-      - status: 200
   - request:
       post: /tiktok/arcane/labels
       headers:
@@ -16,6 +13,9 @@ steps:
     expect:
       - status: 403
       - json: {path: "$.missingScope", equals: "labels:buy"}
-  - request: {get: "{env.PLATFORM_FAKE_URL}/__calls?path=/fulfillment/202309/packages"}
+  - request:
+      get: "{env.PLATFORM_FAKE_URL}/__calls"
+      query: {path: /fulfillment/202309/packages, orderId: "576002"}
+    timeout: 0
 expect:
   - json: {path: "$.count", equals: 0}
