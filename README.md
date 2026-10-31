@@ -86,6 +86,9 @@ flowspec run specs/
 # Specify a custom base URL
 flowspec run specs/ --base-url http://localhost:8080
 
+# Run several files, one at a time, in the order given
+flowspec run specs/buy.flow.yaml specs/refund.flow.yaml
+
 # Set assertion retry timeout (default: 5000ms)
 flowspec run specs/ --timeout 10000
 
@@ -225,7 +228,7 @@ This keeps tokens and secrets out of committed config files. Set `PREVIEW_TOKEN`
 | ---- | ------- |
 | 0 | All flows passed |
 | 1 | One or more flows failed |
-| 2 | Parse error, a malformed `--header`, or a config file that fails to load or validate (invalid YAML, schema, or an unset `${VAR}`) |
+| 2 | Parse error, a malformed `--header`, a config file that fails to load or validate (invalid YAML, schema, or an unset `${VAR}`), or an api flow that references an unset `{env.NAME}` |
 
 A spec that mixes surfaces — a web verb (`visit`, `click`, ...) inside a `surface: cli` flow, or a `run` step inside a web flow — is a parse error and exits **2**, before any command runs or any browser opens.
 
@@ -254,7 +257,10 @@ An optional `surface` field picks the flow's grammar:
 ```yaml
 surface: web   # default — omit the key entirely for the same effect
 surface: cli   # this flow drives a command-line tool instead of a browser
+surface: api   # this flow sends HTTP requests and checks each response
 ```
+
+`surface: api` flows chain HTTP requests: each step has its own `expect`, `capture` reads values from a response for later steps, `{env.NAME}` reads credentials from the environment (redacted from all output), and only GET and HEAD steps are ever re-sent while polling. The grammar is in [docs/specification.md](docs/specification.md#surface-api).
 
 Absent (or explicit `surface: web`) is the browser-driven grammar documented on this page — byte-for-byte the same behavior as every flow written before `surface` existed. `surface: cli` switches the flow's `steps`, `setup`, and `expect` to the CLI grammar described in [CLI Flows](#cli-flows-surface-cli) below. A flow may not mix the two: a web verb (`visit`, `click`, ...) inside a `surface: cli` flow, or a `run` step inside a web flow, is a parse error naming the offending verb and the flow's surface (exit code 2 — see [Exit Codes](#exit-codes)).
 
