@@ -63,9 +63,11 @@ export type FlowStep = z.infer<typeof FlowStepSchema>;
  * Discriminates which step grammar a flow's steps/setup/expect must conform
  * to. "web" (the default) is the existing browser-driven verb family
  * (visit/click/fill/select/wait_for). "cli" is the command-line adapter:
- * run steps executed as subprocesses instead of browser actions.
+ * run steps executed as subprocesses instead of browser actions. "api" is
+ * the HTTP adapter: request steps sent with fetch, each with its own
+ * assertions and captures.
  */
-export const SurfaceSchema = z.enum(["web", "cli"]);
+export const SurfaceSchema = z.enum(["web", "cli", "api"]);
 
 export type Surface = z.infer<typeof SurfaceSchema>;
 
@@ -263,6 +265,297 @@ const CLI_ASSERTION_VERBS = Object.keys(
 ) as (keyof typeof CLI_ASSERTION_SCHEMAS)[];
 
 /**
+ * A flow variable name, as used by `{name}` templates and `capture` keys.
+ * Exported so src/api-template.ts recognizes exactly the names a capture
+ * can define.
+ */
+export const VARIABLE_NAME_PATTERN = "[A-Za-z_][A-Za-z0-9_]*";
+const VARIABLE_NAME_REGEX = new RegExp(`^${VARIABLE_NAME_PATTERN}$`);
+
+/** The HTTP methods an api `request` can name, one per request. */
+export const API_METHODS = [
+  "get",
+  "head",
+  "post",
+  "put",
+  "patch",
+  "delete",
+] as const;
+
+export type ApiMethod = (typeof API_METHODS)[number];
+
+/** Methods whose requests the runner may re-send while polling. */
+export const RETRYABLE_API_METHODS: readonly ApiMethod[] = ["get", "head"];
+
+/** The method key present on a raw request object, if exactly one is. */
+export function requestMethod(request: unknown): ApiMethod | undefined {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    return undefined;
+  }
+  const present = API_METHODS.filter((method) =>
+    Object.hasOwn(request as Record<string, unknown>, method),
+  );
+  return present.length === 1 ? present[0] : undefined;
+}
+
+/** A header or query value: YAML scalars are accepted and sent as strings. */
+const ApiScalarSchema = z.union([z.string(), z.number(), z.boolean()]);
+
+const methodFields = Object.fromEntries(
+  API_METHODS.map((method) => [method, nonEmptyString(method).optional()]),
+) as Record<ApiMethod, z.ZodOptional<z.ZodString>>;
+
+/**
+ * Schema for the `request` block of an api step: exactly one method key
+ * whose value is a path or absolute URL, plus optional headers, query, and
+ * one of `json` or `body`.
+ */
+export const ApiRequestSchema = z
+  .object({
+    ...methodFields,
+    headers: z.record(ApiScalarSchema).optional(),
+    query: z.record(ApiScalarSchema).optional(),
+    json: z.unknown().optional(),
+    body: z.string().optional(),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    const method = requestMethod(request);
+    if (!method) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: `request must have exactly one method key (${API_METHODS.join(", ")})`,
+      });
+      return;
+    }
+
+    // `json: null` is a real body (the JSON document "null"), so presence
+    // is checked by key, not by value.
+    const hasJson = Object.hasOwn(request, "json");
+    const hasBody = request.body !== undefined;
+    if (hasJson && hasBody) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: "request may have json or body, not both",
+      });
+    }
+    if ((hasJson || hasBody) && RETRYABLE_API_METHODS.includes(method)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [hasJson ? "json" : "body"],
+        message: `a ${method} request cannot have a body`,
+      });
+    }
+  });
+
+export type ApiRequest = z.infer<typeof ApiRequestSchema>;
+
+/**
+ * `capture` maps a variable name to a JSONPath, or to `{path, secret}` for
+ * a value that must be redacted from output.
+ */
+const ApiCaptureSchema = z
+  .record(
+    z.union([
+      nonEmptyString("capture path"),
+      z
+        .object({
+          path: nonEmptyString("capture path"),
+          secret: z.boolean().optional(),
+        })
+        .strict(),
+    ]),
+  )
+  .superRefine((capture, ctx) => {
+    for (const name of Object.keys(capture)) {
+      if (!VARIABLE_NAME_REGEX.test(name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [name],
+          message: `capture name "${name}" must match ${VARIABLE_NAME_PATTERN}`,
+        });
+      }
+    }
+  });
+
+export type ApiCapture = z.infer<typeof ApiCaptureSchema>;
+
+const StatusAssertionSchema = z
+  .object({ status: z.number().int().min(100).max(599) })
+  .strict();
+
+const LatencyUnderAssertionSchema = z
+  .object({ latency_under: z.number().positive() })
+  .strict();
+
+/** The comparison keys of a `json` assertion; exactly one must be present. */
+const JSON_COMPARISONS = ["equals", "in", "matches", "exists"] as const;
+
+/**
+ * `equals` is `z.unknown()` for the same reason json_output's is (any
+ * expected value is valid, `null` included), so presence is checked with
+ * `Object.hasOwn` rather than by value.
+ */
+const ApiJsonAssertionSchema = z
+  .object({
+    json: z
+      .object({
+        path: nonEmptyString("path").optional(),
+        equals: z.unknown(),
+        in: z
+          .array(z.unknown())
+          .min(1, "in must list at least one value")
+          .optional(),
+        matches: nonEmptyString("matches").optional(),
+        exists: z.boolean().optional(),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        if (value.path === undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["path"],
+            message: 'Missing required key "path" in json',
+          });
+        }
+        const present = JSON_COMPARISONS.filter((key) =>
+          Object.hasOwn(value, key),
+        );
+        if (present.length !== 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [],
+            message: `json assertion needs exactly one of ${JSON_COMPARISONS.join(", ")}`,
+          });
+        }
+        if (value.matches !== undefined && !compilesAsRegex(value.matches)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["matches"],
+            message: `Invalid regex pattern "${value.matches}" for json.matches`,
+          });
+        }
+      }),
+  })
+  .strict();
+
+const ApiHeaderAssertionSchema = z
+  .object({
+    header: z
+      .object({
+        name: nonEmptyString("name"),
+        equals: z.string().optional(),
+        contains: nonEmptyString("contains").optional(),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        const present = (["equals", "contains"] as const).filter(
+          (key) => value[key] !== undefined,
+        );
+        if (present.length !== 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [],
+            message: "header assertion needs exactly one of equals, contains",
+          });
+        }
+      }),
+  })
+  .strict();
+
+/**
+ * Schema for api assertions: status, json, header, latency_under. Used both
+ * in a request step's own `expect` and in a flow-level `expect`.
+ */
+export const ApiAssertionSchema = z.union([
+  StatusAssertionSchema,
+  ApiJsonAssertionSchema,
+  ApiHeaderAssertionSchema,
+  LatencyUnderAssertionSchema,
+]);
+
+export type ApiAssertion = z.infer<typeof ApiAssertionSchema>;
+
+/** Single source of truth for the api assertion vocabulary. */
+const API_ASSERTION_SCHEMAS = {
+  status: StatusAssertionSchema,
+  json: ApiJsonAssertionSchema,
+  header: ApiHeaderAssertionSchema,
+  latency_under: LatencyUnderAssertionSchema,
+} satisfies Record<string, z.ZodTypeAny>;
+
+const API_ASSERTION_VERBS = Object.keys(
+  API_ASSERTION_SCHEMAS,
+) as (keyof typeof API_ASSERTION_SCHEMAS)[];
+
+/**
+ * The structural shape of a request step. `expect` entries are checked one
+ * by one against the api assertion vocabulary (see validateApiStep) so a
+ * wrong-surface assertion is named; `timeout` is a non-negative retry budget
+ * whose method restriction is also checked there.
+ */
+const ApiRequestStepShape = z
+  .object({
+    request: ApiRequestSchema,
+    capture: ApiCaptureSchema.optional(),
+    expect: z.array(z.unknown()).optional(),
+    timeout: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+/** A `wait: <ms>` step: sleeps, sends nothing. */
+export const ApiWaitStepSchema = z
+  .object({ wait: z.number().nonnegative() })
+  .strict();
+
+export type ApiWaitStep = z.infer<typeof ApiWaitStepSchema>;
+
+/** The method restriction on a request step's `timeout`. */
+function timeoutMethodIssue(step: {
+  request: unknown;
+  timeout?: number;
+}): string | undefined {
+  const method = requestMethod(step.request);
+  if (
+    step.timeout === undefined ||
+    method === undefined ||
+    RETRYABLE_API_METHODS.includes(method)
+  ) {
+    return undefined;
+  }
+  return `timeout is only valid on GET and HEAD steps (this step is ${method.toUpperCase()}, which is sent once and never retried)`;
+}
+
+/**
+ * The fully typed request step, used by asApiFlow's confirming re-parse.
+ * Error reporting for spec authors goes through validateApiStep instead.
+ */
+export const ApiRequestStepSchema = ApiRequestStepShape.extend({
+  expect: z.array(ApiAssertionSchema).optional(),
+}).superRefine((step, ctx) => {
+  const issue = timeoutMethodIssue(step);
+  if (issue) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["timeout"],
+      message: issue,
+    });
+  }
+});
+
+export type ApiRequestStep = z.infer<typeof ApiRequestStepSchema>;
+
+export const ApiStepSchema = z.union([ApiRequestStepSchema, ApiWaitStepSchema]);
+
+export type ApiStep = z.infer<typeof ApiStepSchema>;
+
+export function isApiRequestStep(step: ApiStep): step is ApiRequestStep {
+  return "request" in step;
+}
+
+/**
  * Single source of truth for the web assertion vocabulary — see
  * CLI_ASSERTION_SCHEMAS above for why WEB_ASSERTION_VERBS is derived from
  * this rather than listed separately.
@@ -290,14 +583,17 @@ const WEB_STEP_VERBS = [
 
 /**
  * The key that names what a raw (not-yet-validated) step object is trying to
- * do, for use in a human-facing error message. `run` wins when present so a
- * CLI step with an invalid modifier still reports "run", not "stdin"/"env".
+ * do, for use in a human-facing error message. `run`, `request` and `wait`
+ * win when present so a step with an invalid modifier still reports its
+ * verb, not "stdin"/"env"/"capture".
  */
 function stepVerb(step: unknown): string {
   if (step && typeof step === "object" && !Array.isArray(step)) {
     const record = step as Record<string, unknown>;
-    if ("run" in record) {
-      return "run";
+    for (const verb of ["run", "request", "wait"]) {
+      if (verb in record) {
+        return verb;
+      }
     }
     const [firstKey] = Object.keys(record);
     return firstKey ?? "unknown";
@@ -311,6 +607,16 @@ function isCliVerbStep(step: unknown): boolean {
     typeof step === "object" &&
     !Array.isArray(step) &&
     "run" in (step as Record<string, unknown>)
+  );
+}
+
+function isApiVerbStep(step: unknown): boolean {
+  return (
+    !!step &&
+    typeof step === "object" &&
+    !Array.isArray(step) &&
+    ("request" in (step as Record<string, unknown>) ||
+      "wait" in (step as Record<string, unknown>))
   );
 }
 
@@ -461,7 +767,11 @@ function validateStepForSurface(
   ctx: z.RefinementCtx,
 ): void {
   const matchesVerbFamily =
-    surface === "cli" ? isCliVerbStep(step) : isWebVerbStep(step);
+    surface === "cli"
+      ? isCliVerbStep(step)
+      : surface === "api"
+        ? isApiVerbStep(step)
+        : isWebVerbStep(step);
 
   if (!matchesVerbFamily) {
     ctx.addIssue({
@@ -469,6 +779,11 @@ function validateStepForSurface(
       path,
       message: `Step verb "${stepVerb(step)}" is not valid for surface "${surface}"`,
     });
+    return;
+  }
+
+  if (surface === "api") {
+    validateApiStep(step as Record<string, unknown>, path, ctx);
     return;
   }
 
@@ -481,6 +796,47 @@ function validateStepForSurface(
       ? "run"
       : (matchedVerb(step, WEB_STEP_VERBS) ?? stepVerb(step));
   addSchemaFailureIssues(schema, step, verb, path, ctx);
+}
+
+/**
+ * An api step is checked in two parts: its own shape (request, capture,
+ * timeout) against the step schema, and each `expect` entry against the api
+ * assertion vocabulary at its own path, so a web or CLI assertion inside a
+ * step is named the same way a flow-level one is.
+ */
+function validateApiStep(
+  step: Record<string, unknown>,
+  path: (string | number)[],
+  ctx: z.RefinementCtx,
+): void {
+  if (!("request" in step)) {
+    addSchemaFailureIssues(ApiWaitStepSchema, step, "wait", path, ctx);
+    return;
+  }
+
+  addSchemaFailureIssues(ApiRequestStepShape, step, "request", path, ctx);
+
+  const timeoutIssue = timeoutMethodIssue(
+    step as { request: unknown; timeout?: number },
+  );
+  if (timeoutIssue) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...path, "timeout"],
+      message: timeoutIssue,
+    });
+  }
+
+  if (Array.isArray(step.expect)) {
+    step.expect.forEach((assertion, index) => {
+      validateAssertionForSurface(
+        assertion,
+        "api",
+        [...path, "expect", index],
+        ctx,
+      );
+    });
+  }
 }
 
 function validateStepsForSurface(
@@ -529,17 +885,23 @@ function matchedVerb(
  * key, uncompilable regex) surfaces that specific assertion schema's own
  * message.
  */
+const ASSERTION_VOCABULARY = {
+  web: { verbs: WEB_ASSERTION_VERBS, schemas: WEB_ASSERTION_SCHEMAS },
+  cli: { verbs: CLI_ASSERTION_VERBS, schemas: CLI_ASSERTION_SCHEMAS },
+  api: { verbs: API_ASSERTION_VERBS, schemas: API_ASSERTION_SCHEMAS },
+} satisfies Record<
+  Surface,
+  { verbs: readonly string[]; schemas: Record<string, z.ZodTypeAny> }
+>;
+
 function validateAssertionForSurface(
   assertion: unknown,
   surface: Surface,
-  index: number,
+  path: (string | number)[],
   ctx: z.RefinementCtx,
 ): void {
-  const verbs = surface === "cli" ? CLI_ASSERTION_VERBS : WEB_ASSERTION_VERBS;
-  const schemas =
-    surface === "cli" ? CLI_ASSERTION_SCHEMAS : WEB_ASSERTION_SCHEMAS;
+  const { verbs, schemas } = ASSERTION_VOCABULARY[surface];
   const verb = matchedVerb(assertion, verbs);
-  const path = ["expect", index];
 
   if (!verb) {
     ctx.addIssue({
@@ -550,10 +912,10 @@ function validateAssertionForSurface(
     return;
   }
 
-  // `schemas` is one of two object-literal maps whose keys are known,
+  // `schemas` is one of three object-literal maps whose keys are known,
   // narrow string literals (enforced via `satisfies Record<string,
   // z.ZodTypeAny>` at their declarations) — precise enough that
-  // Object.keys(...) derives CLI_ASSERTION_VERBS/WEB_ASSERTION_VERBS without
+  // Object.keys(...) derives each surface's *_ASSERTION_VERBS without
   // hand-listing them (see those declarations), but too precise for `verb`
   // (a plain string narrowed only at runtime by `matchedVerb`, since
   // `surface` can't correlate which literal-key union it belongs to here).
@@ -572,8 +934,69 @@ function validateExpectForSurface(
     return;
   }
   expectList.forEach((assertion, index) => {
-    validateAssertionForSurface(assertion, surface, index, ctx);
+    validateAssertionForSurface(assertion, surface, ["expect", index], ctx);
   });
+}
+
+/**
+ * Flow-level rules for `surface: api`:
+ * - no `setup` block (the grammar has none; a first request step does the
+ *   same job);
+ * - a flow-level `expect` is appended to the last step, so that step must be
+ *   a request;
+ * - at least one assertion somewhere in the flow, the same floor the other
+ *   surfaces enforce on their single `expect` list.
+ */
+function validateApiFlow(
+  flow: { setup?: unknown; steps: unknown[]; expect?: unknown[] },
+  ctx: z.RefinementCtx,
+): void {
+  if (flow.setup !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["setup"],
+      message:
+        'setup is not supported for surface "api"; make the setup request the first step',
+    });
+  }
+
+  const flowExpect = flow.expect ?? [];
+  validateExpectForSurface(flowExpect, "api", ctx);
+
+  const lastStep = flow.steps[flow.steps.length - 1];
+  if (flowExpect.length > 0 && !isRecordWith(lastStep, "request")) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expect"],
+      message:
+        "a flow-level expect applies to the last step, which must be a request",
+    });
+  }
+
+  const stepAssertionCount = flow.steps.reduce<number>((count, step) => {
+    const stepExpect = isRecordWith(step, "expect") ? step.expect : undefined;
+    return count + (Array.isArray(stepExpect) ? stepExpect.length : 0);
+  }, 0);
+  if (stepAssertionCount + flowExpect.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expect"],
+      message:
+        "expect must contain at least one assertion for surface api (on a step or at flow level)",
+    });
+  }
+}
+
+function isRecordWith<K extends string>(
+  value: unknown,
+  key: K,
+): value is Record<K, unknown> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.hasOwn(value, key)
+  );
 }
 
 /**
@@ -604,18 +1027,38 @@ export const FlowSpecSchema = z
     description: z.string(),
     surface: SurfaceSchema.optional().default("web"),
     setup: z.array(z.custom<FlowStep | CliStep>()).optional(),
-    steps: z.array(z.custom<FlowStep | CliStep>()).min(1),
-    expect: z.array(z.custom<StepAssertion | CliAssertion>()),
+    steps: z.array(z.custom<FlowStep | CliStep | ApiStep>()).min(1),
+    // Optional at this level only because an api flow may carry all of its
+    // assertions on its steps. Web and CLI flows still require it (see the
+    // refinement below).
+    expect: z
+      .array(z.custom<StepAssertion | CliAssertion | ApiAssertion>())
+      .optional(),
   })
   .superRefine((flow, ctx) => {
     const { surface } = flow;
 
     validateStepsForSurface(flow.steps, surface, "steps", ctx);
+
+    if (surface === "api") {
+      validateApiFlow(flow, ctx);
+      return;
+    }
+
     if (flow.setup) {
       validateStepsForSurface(flow.setup, surface, "setup", ctx);
     }
 
-    // Both surfaces: a flow whose expect list is empty asserts nothing, and
+    if (flow.expect === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["expect"],
+        message: "Required",
+      });
+      return;
+    }
+
+    // Every surface: a flow whose expect list is empty asserts nothing, and
     // its assertion loop passes trivially. The web surface has always
     // required at least one; the CLI surface needs the same floor for the
     // same reason.
@@ -650,6 +1093,19 @@ export type CliFlowSpec = Omit<
 };
 
 /**
+ * A FlowSpec already known to be api-surface: request and wait steps, api
+ * assertions, and no setup block.
+ */
+export type ApiFlowSpec = Omit<
+  FlowSpec,
+  "surface" | "setup" | "steps" | "expect"
+> & {
+  surface: "api";
+  steps: ApiStep[];
+  expect?: ApiAssertion[];
+};
+
+/**
  * A FlowSpec already known to be web-surface: the browser-driven step and
  * assertion vocabulary, with no CLI members mixed in.
  */
@@ -662,6 +1118,18 @@ export type WebFlowSpec = Omit<
   steps: FlowStep[];
   expect: StepAssertion[];
 };
+
+/**
+ * Confirming re-parse for asApiFlow, on the same terms as CliFlowSpecSchema
+ * below: real element schemas, no authoring floor on assertion count.
+ */
+const ApiFlowSpecSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  surface: z.literal("api"),
+  steps: z.array(ApiStepSchema).min(1),
+  expect: z.array(ApiAssertionSchema).optional(),
+});
 
 /**
  * Schemas backing asCliFlow/asWebFlow's runtime check (CodeRabbit review,
@@ -757,6 +1225,16 @@ const WebFlowSpecSchema = z
 export function asCliFlow(flow: FlowSpec): CliFlowSpec {
   CliFlowSpecSchema.parse(flow);
   return flow as CliFlowSpec;
+}
+
+/**
+ * Narrow a flow to the api vocabulary. Like asCliFlow, the surface literal
+ * has no default, so the input already carries everything the parse would
+ * return and the original object is handed back.
+ */
+export function asApiFlow(flow: FlowSpec): ApiFlowSpec {
+  ApiFlowSpecSchema.parse(flow);
+  return flow as ApiFlowSpec;
 }
 
 /**

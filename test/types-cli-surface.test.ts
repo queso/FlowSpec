@@ -77,12 +77,13 @@ describe("FlowSpecSchema surface field", () => {
   });
 
   it("rejects an unrecognized surface value, naming the value and listing accepted surfaces", () => {
-    const result = FlowSpecSchema.safeParse(webFlow({ surface: "api" }));
+    const result = FlowSpecSchema.safeParse(webFlow({ surface: "grpc" }));
     expect(result.success).toBe(false);
     const message = issueMessages(result);
-    expect(message).toContain("api");
+    expect(message).toContain("grpc");
     expect(message).toContain("web");
     expect(message).toContain("cli");
+    expect(message).toContain("api");
   });
 });
 
