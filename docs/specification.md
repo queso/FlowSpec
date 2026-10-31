@@ -195,10 +195,15 @@ steps:
     expect:
       - status: 200
       - json: {path: "$.packageId", equals: "{package_id}"}
-  - request: {get: "{env.PLATFORM_FAKE_URL}/__calls?path=/fulfillment/202309/packages"}
+  - request:
+      get: "{env.PLATFORM_FAKE_URL}/__calls"
+      query: {path: /fulfillment/202309/packages, orderId: "576001"}
+    timeout: 0
 expect:
   - json: {path: "$.count", equals: 1}
 ```
+
+The last step counts only the platform calls for this flow's own order, so calls made by other flows do not change the result (see [Execution order](#execution-order)). It has `timeout: 0` because the count must not change after the replay: a count of 2 fails at once instead of being polled for the whole retry budget.
 
 #### Steps
 
@@ -288,10 +293,16 @@ A single request may take up to `stepTimeout` (`--step-timeout`, default 60000 m
 
 #### Redaction
 
-- Every value read through `{env.NAME}` is a secret for the whole run, including in flows that do not reference it.
+- Every value read through `{env.NAME}` is a secret for the whole run, including in flows that do not reference it, unless its name is listed in the config's `publicEnv`.
+- `publicEnv` (in `flowspec.config.yaml`) lists env names that are not secrets, such as a service URL or a run id used in order ids and idempotency keys. They are read the same way, but their values are never redacted and get no short-value warning, so failure messages that contain them stay readable. Every env name not on the list stays secret. An unset public name still fails the run at load time.
+
+  ```yaml
+  publicEnv: [PLATFORM_FAKE_URL, RUN_ID]
+  ```
+
 - A capture marked `secret: true` is a secret from the moment it is captured.
 - Every occurrence of a secret in run output is replaced with `[REDACTED:NAME]` (the env variable name or the capture name). This covers failure messages, including expected values that came from a secret, and the request and response recorded for a failing step. The JSON-escaped and URL-encoded forms of a secret are replaced too.
-- Values shorter than 8 characters are not redacted, since replacing a short substring everywhere would mangle unrelated output. FlowSpec prints a warning naming the variable to stderr instead.
+- Secret values shorter than 8 characters are not redacted, since replacing a short substring everywhere would mangle unrelated output. FlowSpec prints a warning naming the variable to stderr instead. A value that is not meant to be secret belongs in `publicEnv`, which also silences the warning.
 - Config-level header values are recorded as `[config header]`, not their value.
 
 #### Failure report
@@ -313,7 +324,7 @@ A failing api step reports the step, the assertion that failed, the request that
 
 Flows run one at a time, never in parallel. A directory's files run in sorted path order; files named on the command line run in the order given (`flowspec run b.flow.yaml a.flow.yaml` runs `b` first). Steps within a flow also run one at a time, in order.
 
-FlowSpec does not reset state the system under test keeps between flows, such as a fake platform's call counts. A flow that asserts on a shared counter should reset it in its first step (`post: "{env.PLATFORM_FAKE_URL}/__reset"`) or query only calls tagged with a value unique to that flow, such as its own order id or idempotency key.
+FlowSpec does not reset state the system under test keeps between flows, such as a fake platform's call counts. A flow that asserts on a shared counter should reset it in its first step (`post: "{env.PLATFORM_FAKE_URL}/__reset"`) or query only calls tagged with a value unique to that flow, such as its own order id or idempotency key. A run id from the environment (`"576001-{env.RUN_ID}"`, with `RUN_ID` in `publicEnv`) makes those values unique per run as well.
 
 ### Full Example
 
@@ -378,6 +389,11 @@ cwd: string                     # Optional, CLI-surface only. Working directory
 
 captureLimit: number            # Optional, CLI-surface only. Bytes per captured
                                  # stdout/stderr stream — see below.
+
+publicEnv: [string]             # Optional, api-surface only. Env names read by
+                                 # {env.NAME} that are not secrets: not redacted,
+                                 # no short-value warning. See "Redaction" under
+                                 # "Surface: api".
 ```
 
 `headers` is config-level for web and CLI flows: there is no flow-level `headers` block.
