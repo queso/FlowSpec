@@ -725,6 +725,26 @@ describe("requests", () => {
 });
 
 describe("recorded request and response", () => {
+  it("records config header names but not their values, and a step's own override in full", async () => {
+    const result = await run(
+      flow(`
+  - request:
+      get: /__test/echo/h
+      headers: {X-Step: "step-value"}
+    timeout: 0
+    expect:
+      - status: 201
+`),
+      { headers: { "x-config": "config-token-value", "x-step": "replaced" } },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.request?.headers["x-config"]).toBe("[config header]");
+    expect(result.error?.request?.headers["x-step"]).toBe("step-value");
+    expect(JSON.stringify(result.error?.request)).not.toContain(
+      "config-token-value",
+    );
+  });
+
   it("redacts a secret capture's value from the response of a step that failed before capturing", async () => {
     const result = await run(
       flow(`
