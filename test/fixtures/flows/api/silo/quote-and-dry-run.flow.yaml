@@ -1,0 +1,31 @@
+name: quote-and-dry-run
+description: |
+  A quote-only key can price a TikTok label and dry-run the buy. The dry run
+  reports what it would buy without calling the platform.
+surface: api
+steps:
+  - request: {post: "{env.PLATFORM_FAKE_URL}/__reset"}
+    expect:
+      - status: 200
+  - request:
+      post: /tiktok/arcane/labels/quote
+      headers:
+        Authorization: "Bearer {env.PORTER_QUOTE_KEY}"
+      json: {orderIds: ["576001"], weight: {value: "1.2", unit: "LB"}}
+    expect:
+      - status: 200
+      - json: {path: "$.currency", equals: "USD"}
+      - json: {path: "$.amount", matches: "^\\d+\\.\\d{2}$"}
+  - request:
+      post: /tiktok/arcane/labels
+      query: {dryRun: "true"}
+      headers:
+        Authorization: "Bearer {env.PORTER_QUOTE_KEY}"
+      json: {orderIds: ["576001"], weight: {value: "1.2", unit: "LB"}}
+    expect:
+      - status: 200
+      - json: {path: "$.dryRun", equals: true}
+      - json: {path: "$.wouldBuy.orderIds", equals: ["576001"]}
+  - request: {get: "{env.PLATFORM_FAKE_URL}/__calls?path=/fulfillment/202309/packages"}
+expect:
+  - json: {path: "$.count", equals: 0}

@@ -1,0 +1,29 @@
+name: label-buy-is-idempotent
+description: A replayed buy returns the first result without calling the platform again
+surface: api
+steps:
+  - request: {post: "{env.PLATFORM_FAKE_URL}/__reset"}
+    expect:
+      - status: 200
+  - request:
+      post: /tiktok/arcane/labels
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+        Idempotency-Key: e2e-buy-1
+      json: {orderIds: ["576001"], weight: {value: "1.2", unit: "LB"}}
+    capture: {package_id: "$.packageId"}
+    expect:
+      - status: 200
+  - request:
+      post: /tiktok/arcane/labels
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+        Idempotency-Key: e2e-buy-1
+      json: {orderIds: ["576001"], weight: {value: "1.2", unit: "LB"}}
+    expect:
+      - status: 200
+      - header: {name: "Idempotent-Replayed", equals: "true"}
+      - json: {path: "$.packageId", equals: "{package_id}"}
+  - request: {get: "{env.PLATFORM_FAKE_URL}/__calls?path=/fulfillment/202309/packages"}
+expect:
+  - json: {path: "$.count", equals: 1}
