@@ -1,0 +1,23 @@
+name: shopify-label-is-polled-until-purchased
+description: |
+  A Shopify label purchase is asynchronous. The buy answers 202 PENDING, and
+  polling the label with GET reaches PURCHASED with a tracking number.
+surface: api
+steps:
+  - request:
+      post: /shopify/arcane/labels
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+      json: {orderIds: ["9001"], weight: {value: "2.0", unit: "LB"}}
+    capture: {label_id: "$.labelId"}
+    expect:
+      - status: 202
+      - json: {path: "$.status", equals: "PENDING"}
+  - request:
+      get: "/shopify/arcane/labels/{label_id}"
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+    expect:
+      - status: 200
+      - json: {path: "$.status", equals: "PURCHASED"}
+      - json: {path: "$.trackingNumber", exists: true}

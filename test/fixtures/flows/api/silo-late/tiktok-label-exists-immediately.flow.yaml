@@ -1,0 +1,22 @@
+name: tiktok-label-exists-immediately
+description: |
+  Checks that the label record exists right after the buy, with no retry.
+  Against a service whose record appears late, this flow fails.
+surface: api
+steps:
+  - request:
+      post: /tiktok/arcane/labels
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+        Idempotency-Key: e2e-late-immediate-1
+      json: {orderIds: ["576200"], weight: {value: "1.2", unit: "LB"}}
+    capture: {package_id: "$.packageId"}
+    expect:
+      - status: 200
+  - request:
+      get: "/tiktok/arcane/labels/{package_id}"
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+    timeout: 0
+    expect:
+      - status: 200

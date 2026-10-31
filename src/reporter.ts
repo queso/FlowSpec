@@ -1,4 +1,11 @@
-import type { CliStep, FlowError, FlowResult, StepAction } from "./types.js";
+import {
+  type ApiStep,
+  type CliStep,
+  type FlowError,
+  type FlowResult,
+  requestMethod,
+  type StepAction,
+} from "./types.js";
 
 // ANSI color codes
 const GREEN = "\x1b[32m";
@@ -26,7 +33,7 @@ function formatDuration(ms: number): string {
  * this only keeps a CLI action from silently falling through to "unknown
  * action" now that FlowErrorSchema.action accepts one.
  */
-function formatAction(action: StepAction | CliStep): string {
+function formatAction(action: StepAction | CliStep | ApiStep): string {
   if ("visit" in action) {
     return `visit "${action.visit}"`;
   }
@@ -44,6 +51,15 @@ function formatAction(action: StepAction | CliStep): string {
       ? action.run.join(" ")
       : action.run;
     return `run "${command}"`;
+  }
+  if ("request" in action) {
+    const method = requestMethod(action.request);
+    if (method) {
+      return `${method.toUpperCase()} ${action.request[method]}`;
+    }
+  }
+  if ("wait" in action) {
+    return `wait ${action.wait}ms`;
   }
   return "unknown action";
 }
@@ -111,6 +127,42 @@ function formatCliFailureLines(error: FlowError): string[] {
 }
 
 /**
+ * The api failure lines: the request a failing step sent and the response
+ * it was checked against, each header on its own deeper-indented line.
+ * Values arrive already redacted (src/api-runner.ts). Absent when the step
+ * failed before sending, such as on a missing capture.
+ */
+function formatApiFailureLines(error: FlowError): string[] {
+  const lines: string[] = [];
+  const headerLines = (headers: Record<string, string>) =>
+    Object.entries(headers).map(
+      ([name, value]) => `${REPORT_INDENT}${name}: ${value}`,
+    );
+
+  if (error.request) {
+    lines.push(`Request: ${error.request.method} ${error.request.url}`);
+    lines.push(...headerLines(error.request.headers));
+    if (error.request.body !== undefined) {
+      lines.push(
+        `Request body: ${indentLines(error.request.body, REPORT_INDENT)}`,
+      );
+    }
+  }
+
+  if (error.response) {
+    lines.push(
+      `Response: ${error.response.status} in ${error.response.latencyMs}ms`,
+    );
+    lines.push(...headerLines(error.response.headers));
+    lines.push(
+      `Response body: ${indentLines(error.response.body, REPORT_INDENT)}`,
+    );
+  }
+
+  return lines;
+}
+
+/**
  * Format a FlowError into a human-readable string
  * @param error - The FlowError to format
  * @returns Formatted error message
@@ -125,6 +177,7 @@ export function formatError(error: FlowError): string {
 
   parts.push(`Error: ${indentLines(error.message, REPORT_INDENT)}`);
   parts.push(...formatCliFailureLines(error));
+  parts.push(...formatApiFailureLines(error));
 
   return parts.join(`\n${REPORT_INDENT}`);
 }
@@ -159,8 +212,11 @@ export function formatResult(result: FlowResult): string {
     lines.push(
       `${REPORT_INDENT}Error: ${indentLines(result.error.message, REPORT_INDENT)}`,
     );
-    for (const cliLine of formatCliFailureLines(result.error)) {
-      lines.push(`${REPORT_INDENT}${cliLine}`);
+    for (const surfaceLine of [
+      ...formatCliFailureLines(result.error),
+      ...formatApiFailureLines(result.error),
+    ]) {
+      lines.push(`${REPORT_INDENT}${surfaceLine}`);
     }
   }
 

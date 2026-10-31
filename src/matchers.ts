@@ -108,14 +108,18 @@ export function matchRegex(
   };
 }
 
-type PathResolution = { found: true; value: unknown } | { found: false };
+export type PathResolution = { found: true; value: unknown } | { found: false };
 
 /**
  * Resolve a "$.a.b" style dot-path against a parsed JSON value. The leading
  * "$" is stripped before splitting on ".". Traversing into a missing key, or
  * into a non-object/array value, resolves to not-found rather than throwing.
+ * Array elements are addressed by index segment ("$.items.0.id").
+ *
+ * Exported for the api surface (src/api-assertions.ts), which resolves the
+ * same paths against response bodies.
  */
-function resolvePath(root: unknown, path: string): PathResolution {
+export function resolvePath(root: unknown, path: string): PathResolution {
   const withoutRoot = path.startsWith("$") ? path.slice(1) : path;
   const segments = withoutRoot
     .split(".")
@@ -136,8 +140,12 @@ function resolvePath(root: unknown, path: string): PathResolution {
   return { found: true, value: current };
 }
 
-/** Structural (deep) equality over JSON-shaped values. */
-function deepEqual(a: unknown, b: unknown): boolean {
+/**
+ * Structural (deep) equality over JSON-shaped values. Strict about types:
+ * the string "1.25" never equals the number 1.25. Shared by the CLI
+ * surface's json_output and the api surface's json equals/in.
+ */
+export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) {
     return true;
   }
