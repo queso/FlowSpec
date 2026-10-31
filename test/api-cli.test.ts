@@ -270,6 +270,45 @@ steps:
   });
 });
 
+describe("publicEnv", () => {
+  it("prints public env values verbatim without a warning and still redacts the rest", async () => {
+    writeFileSync(
+      join(workdir, "flowspec.config.yaml"),
+      "publicEnv: [E2E_RUN_ID, E2E_PUBLIC_SHORT]\n",
+    );
+    const flowPath = writeFlow(
+      "public.flow.yaml",
+      `
+name: public-env
+description: a failure message that carries public and secret env values
+surface: api
+steps:
+  - request:
+      post: "/__test/echo/orders/{env.E2E_RUN_ID}-{env.E2E_PUBLIC_SHORT}"
+      headers: {Authorization: "Bearer {env.E2E_SECRET_KEY}"}
+    expect:
+      - json: {path: "$.headers.authorization", equals: "order-{env.E2E_RUN_ID}"}
+`,
+    );
+
+    const result = await runCli([flowPath], {
+      E2E_RUN_ID: "run-20261031-a1b2",
+      E2E_PUBLIC_SHORT: "x1",
+      E2E_SECRET_KEY: SECRET_KEY,
+    });
+    const output = result.stdout + result.stderr;
+
+    expect(result.exitCode).toBe(1);
+    expect(output).toContain(
+      'json $.headers.authorization expected "order-run-20261031-a1b2" but got "Bearer [REDACTED:E2E_SECRET_KEY]"',
+    );
+    expect(output).toContain("/__test/echo/orders/run-20261031-a1b2-x1");
+    expect(output).not.toContain("[REDACTED:E2E_RUN_ID]");
+    expect(output).not.toContain(SECRET_KEY);
+    expect(result.stderr).not.toContain("Warning:");
+  });
+});
+
 describe("exit codes", () => {
   it("exits 0 when every api flow passes and 1 when one fails", async () => {
     const passing = writeFlow(

@@ -724,6 +724,48 @@ describe("requests", () => {
   });
 });
 
+describe("publicEnv", () => {
+  it("leaves a public env value readable while a non-listed env value in the same flow is redacted", async () => {
+    const result = await run(
+      flow(`
+  - request:
+      get: "{env.API_TEST_PLATFORM_URL}/__echo"
+      headers: {Authorization: "Bearer {env.API_TEST_BUY_KEY}"}
+    timeout: 0
+    expect:
+      - json: {path: "$.headers.authorization", equals: "{env.API_TEST_PLATFORM_URL}"}
+`),
+      { publicEnv: ["API_TEST_PLATFORM_URL"] },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain(
+      `json $.headers.authorization expected "${fixture.platformUrl}" but got "Bearer [REDACTED:API_TEST_BUY_KEY]"`,
+    );
+    expect(result.error?.request?.url).toBe(`${fixture.platformUrl}/__echo`);
+    expect(JSON.stringify(result)).not.toContain(BUY_KEY);
+  });
+
+  it("still fails before any request when a public env name is unset", async () => {
+    delete process.env.API_TEST_UNSET_PUBLIC;
+    const result = await run(
+      flow(`
+  - request: {post: /__test/tokens}
+    expect:
+      - status: 201
+  - request: {get: "/__test/echo/{env.API_TEST_UNSET_PUBLIC}"}
+    expect:
+      - status: 200
+`),
+      { publicEnv: ["API_TEST_UNSET_PUBLIC"] },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain(
+      'Environment variable "API_TEST_UNSET_PUBLIC" is not set',
+    );
+    expect(fixture.requestCount("POST", "/__test/tokens")).toBe(0);
+  });
+});
+
 describe("recorded request and response", () => {
   it("records config header names but not their values, and a step's own override in full", async () => {
     const result = await run(

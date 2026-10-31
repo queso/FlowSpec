@@ -289,19 +289,25 @@ function findUnsetEnvReferences(parsedFlows: ParsedFlow[]): ParseError[] {
 }
 
 /**
- * The run's redactor, with every env value the api flows read registered
+ * The run's redactor, with every non-public env value the api flows read registered
  * before the first flow runs. Shared by every flow, and applied to every
  * line of run output, so a secret read by one flow never shows up in
  * another flow's output either.
  */
-function createRunRedactor(parsedFlows: ParsedFlow[]): Redactor {
+function createRunRedactor(
+  parsedFlows: ParsedFlow[],
+  publicEnv: readonly string[] = [],
+): Redactor {
   const redactor = new Redactor();
+  const isPublic = new Set(publicEnv);
   for (const { flow } of parsedFlows) {
     if (flow.surface !== "api") {
       continue;
     }
     for (const reference of collectEnvReferences(asApiFlow(flow))) {
-      redactor.addEnvSecret(reference.name, process.env[reference.name]);
+      if (!isPublic.has(reference.name)) {
+        redactor.addEnvSecret(reference.name, process.env[reference.name]);
+      }
     }
   }
   return redactor;
@@ -333,6 +339,7 @@ async function runFlows(
       cwd: config.cwd,
       captureLimit: config.captureLimit,
       redactor,
+      publicEnv: config.publicEnv,
     });
     print(formatResult(result));
     results.push(result);
@@ -493,7 +500,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
   }
 
   // Run all flows, one at a time, in discovery order
-  const redactor = createRunRedactor(flows);
+  const redactor = createRunRedactor(flows, mergedConfig.publicEnv);
   const results = await runFlows(flows, mergedConfig, redactor);
 
   // Print summary

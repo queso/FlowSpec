@@ -68,6 +68,11 @@ export interface ApiRunOptions {
    * redactor for this flow alone is created.
    */
   redactor?: Redactor;
+  /**
+   * Env names that are not secrets (config `publicEnv`): read normally, never
+   * redacted, no short-value warning.
+   */
+  publicEnv?: readonly string[];
   /** Where `{env.NAME}` reads from. Defaults to process.env. */
   env?: Readonly<Record<string, string | undefined>>;
 }
@@ -424,8 +429,11 @@ export async function runApiFlow(
   if (unset.length > 0) {
     return finish({ message: formatUnsetEnv(unset) });
   }
+  const publicEnv = new Set(options.publicEnv ?? []);
   for (const reference of collectEnvReferences(flow)) {
-    redactor.addEnvSecret(reference.name, env[reference.name]);
+    if (!publicEnv.has(reference.name)) {
+      redactor.addEnvSecret(reference.name, env[reference.name]);
+    }
   }
 
   const ctx = { captures: new Map<string, unknown>(), env };

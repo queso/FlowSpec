@@ -70,6 +70,8 @@ export interface RunnerOptions {
    * flow is redacted from every later flow's output. Other surfaces ignore it.
    */
   redactor?: Redactor;
+  /** Api-surface env names that are not secrets (config `publicEnv`). */
+  publicEnv?: readonly string[];
 }
 
 /**
@@ -814,6 +816,7 @@ export async function runFlow(
       headers: options?.headers,
       headersScope: options?.headersScope,
       redactor: options?.redactor,
+      publicEnv: options?.publicEnv,
     });
   }
 
