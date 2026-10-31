@@ -5,6 +5,7 @@ import type { FlowResult } from "../src/types";
 import {
   BUY_SCOPE,
   createSiloFixture,
+  ISSUED_TOKEN,
   LONG_TEXT_BODY,
   PLATFORM_PACKAGES_PATH,
   QUOTE_SCOPE,
@@ -724,6 +725,20 @@ describe("requests", () => {
 });
 
 describe("recorded request and response", () => {
+  it("redacts a secret capture's value from the response of a step that failed before capturing", async () => {
+    const result = await run(
+      flow(`
+  - request: {post: /__test/tokens}
+    capture: {token: {path: "$.token", secret: true}}
+    expect:
+      - status: 200
+`),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.response?.body).toBe('{"token":"[REDACTED:token]"}');
+    expect(JSON.stringify(result)).not.toContain(ISSUED_TOKEN);
+  });
+
   it("attaches the request and response of a failing step, with env values redacted", async () => {
     const result = await run(
       flow(`

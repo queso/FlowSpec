@@ -19,6 +19,7 @@
 
 import {
   type ApiResponseSnapshot,
+  BODY_EXCERPT_BYTES,
   bodyExcerpt,
   evaluateApiAssertion,
   type ParsedBody,
@@ -265,9 +266,32 @@ function responseRecord(response: ApiResponseSnapshot): ApiResponseRecord {
 }
 
 interface Attempt {
-  failure?: string;
   response?: ApiResponseSnapshot;
   parsed?: ParsedBody;
+}
+
+/**
+ * A step that failed never captures, but its response is still recorded on
+ * the failure. Any value its secret captures would have read is registered
+ * so it is redacted from that record too.
+ */
+function registerSecretCaptures(
+  step: ApiRequestStep,
+  parsed: ParsedBody | undefined,
+  redactor: Redactor,
+): void {
+  if (!parsed?.ok) {
+    return;
+  }
+  for (const [name, spec] of Object.entries(step.capture ?? {})) {
+    if (typeof spec === "string" || !spec.secret) {
+      continue;
+    }
+    const resolved = resolvePath(parsed.value, spec.path);
+    if (resolved.found) {
+      redactor.addCaptureSecret(name, resolved.value);
+    }
+  }
 }
 
 type StepOutcome =
@@ -313,14 +337,14 @@ async function runRequestStep(
     attempts += 1;
     const sent = await send(prepared, requestTimeout);
     if (!sent.ok) {
-      last = { failure: sent.message };
+      last = {};
       return sent.message;
     }
     const parsed = parseBody(sent.response.body);
     for (const assertion of resolvedAssertions) {
       const failure = evaluateApiAssertion(assertion, sent.response, parsed);
       if (failure) {
-        last = { failure, response: sent.response, parsed };
+        last = { response: sent.response, parsed };
         return failure;
       }
     }
@@ -331,6 +355,7 @@ async function runRequestStep(
   const failure = await pollUntilPass(check, budget);
 
   if (failure) {
+    registerSecretCaptures(step, last.parsed, redactor);
     const retried =
       attempts > 1
         ? ` (after ${attempts} requests over ${Date.now() - started}ms)`
@@ -356,7 +381,7 @@ async function runRequestStep(
 
     if (!parsed?.ok) {
       return fail(
-        `path "${path}" cannot be read because the response body is not valid JSON. First 500 bytes: ${bodyExcerpt(last.response?.body ?? "")}`,
+        `path "${path}" cannot be read because the response body is not valid JSON. First ${BODY_EXCERPT_BYTES} bytes: ${bodyExcerpt(last.response?.body ?? "")}`,
       );
     }
     const resolved = resolvePath(parsed.value, path);
