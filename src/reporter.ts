@@ -1,4 +1,11 @@
-import type { CliStep, FlowError, FlowResult, StepAction } from "./types.js";
+import {
+  type ApiStep,
+  type CliStep,
+  type FlowError,
+  type FlowResult,
+  requestMethod,
+  type StepAction,
+} from "./types.js";
 
 // ANSI color codes
 const GREEN = "\x1b[32m";
@@ -26,7 +33,7 @@ function formatDuration(ms: number): string {
  * this only keeps a CLI action from silently falling through to "unknown
  * action" now that FlowErrorSchema.action accepts one.
  */
-function formatAction(action: StepAction | CliStep): string {
+function formatAction(action: StepAction | CliStep | ApiStep): string {
   if ("visit" in action) {
     return `visit "${action.visit}"`;
   }
@@ -44,6 +51,15 @@ function formatAction(action: StepAction | CliStep): string {
       ? action.run.join(" ")
       : action.run;
     return `run "${command}"`;
+  }
+  if ("request" in action) {
+    const method = requestMethod(action.request);
+    if (method) {
+      return `${method.toUpperCase()} ${action.request[method]}`;
+    }
+  }
+  if ("wait" in action) {
+    return `wait ${action.wait}ms`;
   }
   return "unknown action";
 }

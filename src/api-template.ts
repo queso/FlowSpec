@@ -290,3 +290,24 @@ export function collectEnvReferences(flow: ApiFlowSpec): EnvReference[] {
   }
   return references;
 }
+
+/** The env references in `flow` whose variable is not set in `env`. */
+export function unsetEnvReferences(
+  flow: ApiFlowSpec,
+  env: Readonly<Record<string, string | undefined>>,
+): EnvReference[] {
+  return collectEnvReferences(flow).filter(
+    (reference) =>
+      !Object.hasOwn(env, reference.name) || env[reference.name] === undefined,
+  );
+}
+
+/** One line per unset reference, naming the variable and where it is used. */
+export function formatUnsetEnv(references: EnvReference[]): string {
+  return references
+    .map(
+      (reference) =>
+        `Environment variable "${reference.name}" is not set (referenced as {env.${reference.name}} at ${reference.location})`,
+    )
+    .join("\n");
+}

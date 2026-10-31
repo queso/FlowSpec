@@ -1278,6 +1278,30 @@ export function asWebFlow(flow: FlowSpec): WebFlowSpec {
 }
 
 /**
+ * The request an api step sent, as recorded on its failure. Header names
+ * are lowercase. Config-level header values are not recorded (see
+ * src/api-runner.ts); bodies are bounded.
+ */
+export const ApiRequestRecordSchema = z.object({
+  method: z.string(),
+  url: z.string(),
+  headers: z.record(z.string()),
+  body: z.string().optional(),
+});
+
+export type ApiRequestRecord = z.infer<typeof ApiRequestRecordSchema>;
+
+/** The response an api step's assertions were checked against. */
+export const ApiResponseRecordSchema = z.object({
+  status: z.number(),
+  headers: z.record(z.string()),
+  body: z.string(),
+  latencyMs: z.number(),
+});
+
+export type ApiResponseRecord = z.infer<typeof ApiResponseRecordSchema>;
+
+/**
  * Schema for flow execution errors
  * Can describe either a step failure or an assertion failure
  *
@@ -1289,18 +1313,22 @@ export function asWebFlow(flow: FlowSpec): WebFlowSpec {
  * `exitCode`/`stdout`/`stderr`/`workdir` are the CLI analogs of `screenshot`:
  * populated by a CLI flow's failure, left absent for a web flow's (and vice
  * versa — `screenshot` is simply never set for a CLI failure).
+ * `request`/`response` are the api analogs: the request a failing api step
+ * sent and the response it was checked against, both redacted.
  */
 export const FlowErrorSchema = z.object({
   message: z.string(),
   phase: z.enum(["setup", "headers"]).optional(),
   step: z.number().optional(),
-  action: z.union([StepActionSchema, CliStepSchema]).optional(),
+  action: z.union([StepActionSchema, CliStepSchema, ApiStepSchema]).optional(),
   assertion: StepAssertionSchema.optional(),
   screenshot: z.string().optional(),
   exitCode: z.number().optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
   workdir: z.string().optional(),
+  request: ApiRequestRecordSchema.optional(),
+  response: ApiResponseRecordSchema.optional(),
 });
 
 export type FlowError = z.infer<typeof FlowErrorSchema>;
