@@ -16,11 +16,26 @@ export const BODY_EXCERPT_BYTES = 500;
 
 const TRUNCATION_MARKER = "[truncated]";
 
-/** The first BODY_EXCERPT_BYTES bytes of `text`, marked when cut. */
-export function bodyExcerpt(text: string): string {
-  const bytes = Buffer.from(text, "utf-8");
+/** Replaces secrets in a string; the identity when there are none. */
+export type Redact = (text: string) => string;
+
+const noRedaction: Redact = (text) => text;
+
+/**
+ * The first BODY_EXCERPT_BYTES bytes of `text`, marked when cut.
+ *
+ * `redact` runs on the whole text before it is cut. Redacting afterwards
+ * cannot work: a secret that straddles the cut point is no longer a whole
+ * occurrence, so its first bytes would be printed.
+ */
+export function bodyExcerpt(
+  text: string,
+  redact: Redact = noRedaction,
+): string {
+  const redacted = redact(text);
+  const bytes = Buffer.from(redacted, "utf-8");
   if (bytes.length <= BODY_EXCERPT_BYTES) {
-    return text;
+    return redacted;
   }
   return `${bytes.subarray(0, BODY_EXCERPT_BYTES).toString("utf-8")}${TRUNCATION_MARKER}`;
 }
@@ -62,24 +77,21 @@ function describeType(value: unknown): string {
   return /^[aeiou]/.test(name) ? `an ${name}` : `a ${name}`;
 }
 
-/** JSON rendering, so a string's quotes show and "1" reads differently from 1. */
-function show(value: unknown): string {
-  return boundedExcerpt(JSON.stringify(value) ?? String(value));
-}
-
-function notJsonMessage(path: string, body: string, reason: string): string {
-  return `json ${path}: response body is not valid JSON (${reason}). First ${BODY_EXCERPT_BYTES} bytes: ${bodyExcerpt(body)}`;
-}
-
 function evaluateJson(
   json: Extract<ApiAssertion, { json: unknown }>["json"],
   response: ApiResponseSnapshot,
   parsed: ParsedBody,
+  redact: Redact,
 ): string | undefined {
   const path = json.path ?? "$";
 
+  // JSON rendering, so a string's quotes show and "1" reads differently
+  // from 1. Redacted before it is bounded, for the reason bodyExcerpt gives.
+  const show = (value: unknown): string =>
+    boundedExcerpt(redact(JSON.stringify(value) ?? String(value)));
+
   if (!parsed.ok) {
-    return notJsonMessage(path, response.body, parsed.reason);
+    return `json ${path}: response body is not valid JSON (${parsed.reason}). First ${BODY_EXCERPT_BYTES} bytes: ${bodyExcerpt(response.body, redact)}`;
   }
 
   const resolved = resolvePath(parsed.value, path);
@@ -150,19 +162,21 @@ function evaluateHeader(
 /**
  * Check one assertion against `response`. Returns a failure message, or
  * undefined when it passes. `parsed` is the body parsed once per response.
+ * `redact` is applied to every body and value before it is excerpted.
  */
 export function evaluateApiAssertion(
   assertion: ApiAssertion,
   response: ApiResponseSnapshot,
   parsed: ParsedBody,
+  redact: Redact = noRedaction,
 ): string | undefined {
   if ("status" in assertion) {
     return response.status === assertion.status
       ? undefined
-      : `Expected status ${assertion.status} but got ${response.status}. Body: ${bodyExcerpt(response.body)}`;
+      : `Expected status ${assertion.status} but got ${response.status}. Body: ${bodyExcerpt(response.body, redact)}`;
   }
   if ("json" in assertion) {
-    return evaluateJson(assertion.json, response, parsed);
+    return evaluateJson(assertion.json, response, parsed, redact);
   }
   if ("header" in assertion) {
     return evaluateHeader(assertion.header, response);

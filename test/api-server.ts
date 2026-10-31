@@ -346,6 +346,17 @@ function createPorterApp(
     res.json({ n, ready: n >= 3 });
   });
 
+  // Sends the request body back unchanged with the status from ?status=,
+  // so a test controls exactly where each byte of the response body sits.
+  app.post("/__test/reflect", (req, res) => {
+    const body =
+      typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    res
+      .status(Number(req.query.status ?? 200))
+      .type("application/json")
+      .send(body);
+  });
+
   app.get("/__test/text", (_req, res) => {
     res.type("text/plain").send(LONG_TEXT_BODY);
   });

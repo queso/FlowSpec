@@ -766,6 +766,95 @@ describe("publicEnv", () => {
   });
 });
 
+describe("redaction before truncation", () => {
+  // A secret that straddles a cut point must not leak its first characters.
+  // The body is {"pad":"<y * n>","k":"<secret>"}: the secret starts at byte
+  // 15 + n, so n = 473 puts its first 12 bytes before the 500-byte cut.
+  const STRADDLING_SECRET = "QZXV9secretABCDEFGHIJKLMNOP";
+  const LONG_SECRET = `QZXW8long${"S".repeat(300)}`;
+
+  function leakedPrefix(result: FlowResult, secret: string): boolean {
+    return JSON.stringify(result).includes(secret.slice(0, 8));
+  }
+
+  beforeAll(() => {
+    process.env.API_TEST_STRADDLE = STRADDLING_SECRET;
+    process.env.API_TEST_LONG_SECRET = LONG_SECRET;
+  });
+
+  afterAll(() => {
+    delete process.env.API_TEST_STRADDLE;
+    delete process.env.API_TEST_LONG_SECRET;
+  });
+
+  it("redacts a secret cut by the 500-byte excerpt in the response record, status message and request record", async () => {
+    const result = await run(
+      flow(`
+  - request:
+      post: "/__test/reflect?status=500"
+      json: {pad: "${"y".repeat(473)}", k: "{env.API_TEST_STRADDLE}"}
+    expect:
+      - status: 200
+`),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain("Expected status 200 but got 500");
+    expect(result.error?.response?.body).toContain("[truncated]");
+    expect(result.error?.request?.body).toContain("[truncated]");
+    expect(leakedPrefix(result, STRADDLING_SECRET)).toBe(false);
+  });
+
+  it("redacts a secret cut by the excerpt in a capture-not-JSON message", async () => {
+    const result = await run(
+      flow(`
+  - request:
+      post: /__test/reflect
+      body: '${"y".repeat(488)}{env.API_TEST_STRADDLE}'
+    capture: {x: "$.x"}
+    expect:
+      - status: 200
+`),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain("not valid JSON");
+    expect(leakedPrefix(result, STRADDLING_SECRET)).toBe(false);
+  });
+
+  it("redacts a long env value cut by the value excerpt in a json equals failure", async () => {
+    const result = await run(
+      flow(`
+  - request: {get: /__test/echo/long}
+    timeout: 0
+    expect:
+      - json: {path: "$.path", equals: "{env.API_TEST_LONG_SECRET}"}
+`),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain(
+      'expected "[REDACTED:API_TEST_LONG_SECRET]"',
+    );
+    expect(leakedPrefix(result, LONG_SECRET)).toBe(false);
+  });
+
+  it("redacts a long secret capture cut by the value excerpt in a json equals failure", async () => {
+    const result = await run(
+      flow(`
+  - request: {post: /__test/echo/cap, json: {token: "{env.API_TEST_LONG_SECRET}"}}
+    capture: {token: {path: "$.body.token", secret: true}}
+    expect:
+      - status: 200
+  - request: {post: /__test/echo/again, json: {other: "x"}}
+    expect:
+      - json: {path: "$.body.other", equals: "{token}"}
+`),
+      { publicEnv: ["API_TEST_LONG_SECRET"] },
+    );
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toContain('expected "[REDACTED:token]"');
+    expect(leakedPrefix(result, LONG_SECRET)).toBe(false);
+  });
+});
+
 describe("recorded request and response", () => {
   it("records config header names but not their values, and a step's own override in full", async () => {
     const result = await run(

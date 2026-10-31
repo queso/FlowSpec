@@ -270,6 +270,35 @@ steps:
   });
 });
 
+describe("redaction before truncation", () => {
+  it("prints no part of a secret that straddles the 500-byte body excerpt", async () => {
+    const secret = "QZXV9secretABCDEFGHIJKLMNOP";
+    // {"pad":"<473 y>","k":"<secret>"} puts the secret's first 12 bytes
+    // before the cut, in both the request and the reflected response body.
+    const flowPath = writeFlow(
+      "straddle.flow.yaml",
+      `
+name: straddle
+description: a secret cut by the body excerpt
+surface: api
+steps:
+  - request:
+      post: "/__test/reflect?status=500"
+      json: {pad: "${"y".repeat(473)}", k: "{env.E2E_STRADDLE}"}
+    expect:
+      - status: 200
+`,
+    );
+
+    const result = await runCli([flowPath], { E2E_STRADDLE: secret });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("Expected status 200 but got 500");
+    expect(result.stdout).toContain("[truncated]");
+    expect(result.stdout + result.stderr).not.toContain(secret.slice(0, 8));
+  });
+});
+
 describe("publicEnv", () => {
   it("prints public env values verbatim without a warning and still redacts the rest", async () => {
     writeFileSync(
