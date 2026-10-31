@@ -51,9 +51,11 @@ export interface SiloFixture {
   readonly platformUrl: string;
   /** Requests porter has received for this method and path (query ignored). */
   requestCount(method: string, path: string): number;
+  /** Every request porter has received, in order, as "METHOD /path". */
+  readonly requestLog: readonly string[];
   /** Ordered `flow:event` entries recorded by `GET /__test/mark`. */
   readonly marks: readonly string[];
-  /** Clears request counts and marks. Does not touch platform calls. */
+  /** Clears request counts, the request log and marks. Does not touch platform calls. */
   resetObservations(): void;
 }
 
@@ -124,13 +126,14 @@ function createPlatformApp(): Express {
 function createPorterApp(
   options: SiloFixtureOptions,
   platformUrl: () => string,
-  observations: { counts: Map<string, number>; marks: string[] },
+  observations: { counts: Map<string, number>; log: string[]; marks: string[] },
 ): Express {
   const app = express();
 
   app.use((req, _res, next) => {
     const key = `${req.method} ${req.path}`;
     observations.counts.set(key, (observations.counts.get(key) ?? 0) + 1);
+    observations.log.push(key);
     next();
   });
   app.use(express.json({ type: "application/json" }));
@@ -349,6 +352,7 @@ export function createSiloFixture(options: SiloFixtureOptions): SiloFixture {
   let platform: Server | undefined;
   const observations = {
     counts: new Map<string, number>(),
+    log: [] as string[],
     marks: [] as string[],
   };
 
@@ -379,11 +383,15 @@ export function createSiloFixture(options: SiloFixtureOptions): SiloFixture {
     requestCount(method: string, path: string) {
       return observations.counts.get(`${method.toUpperCase()} ${path}`) ?? 0;
     },
+    get requestLog() {
+      return observations.log;
+    },
     get marks() {
       return observations.marks;
     },
     resetObservations() {
       observations.counts.clear();
+      observations.log.length = 0;
       observations.marks.length = 0;
     },
   };

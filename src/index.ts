@@ -2,6 +2,11 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  collectEnvReferences,
+  formatUnsetEnv,
+  unsetEnvReferences,
+} from "./api-template.js";
+import {
   CONFIG_FILE_NAME,
   DEFAULT_STEP_TIMEOUT,
   type FlowSpecConfig,
@@ -10,12 +15,19 @@ import {
 } from "./config.js";
 import { formatInitResult, initProject } from "./init.js";
 import { parseFlowFile } from "./parser.js";
+import { Redactor } from "./redact.js";
 import { formatResult, formatSummary } from "./reporter.js";
 import { DEFAULT_TIMEOUT, runFlow } from "./runner.js";
-import type { FlowResult, FlowSpec, FlowStep } from "./types.js";
+import {
+  asApiFlow,
+  type FlowResult,
+  type FlowSpec,
+  type FlowStep,
+} from "./types.js";
 
 interface CliOptions {
-  path?: string;
+  /** Flow files and directories, in the order given. */
+  paths: string[];
   timeout?: number;
   baseUrl?: string;
   /** CLI-surface process-kill deadline for one run step, in milliseconds. */
@@ -34,15 +46,19 @@ Usage: flowspec <command> [options]
 
 Commands:
   init              Initialize FlowSpec in the current directory
-  run <path>        Run FlowSpec flow files
+  run <path>...     Run FlowSpec flow files. Flows run one at a time: files
+                    in the order given, a directory's files in sorted order
 
 Run Command Options:
   --base-url <url>  Base URL for relative paths (default from config or http://localhost:3000)
-  --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT})
+  --timeout <ms>    Assertion retry timeout in milliseconds (default: ${DEFAULT_TIMEOUT}).
+                    For api (surface: api) flows, the retry budget of GET
+                    and HEAD steps that set no timeout of their own
   --step-timeout <ms>
                     Milliseconds a single CLI (surface: cli) run step may
-                    take before its process is killed. Must be a positive
-                    integer (default: ${DEFAULT_STEP_TIMEOUT})
+                    take before its process is killed, and a single api
+                    (surface: api) request may take to answer. Must be a
+                    positive integer (default: ${DEFAULT_STEP_TIMEOUT})
   --header "Name: value"
                     Extra HTTP header to send. Repeatable; overrides the
                     config headers block entirely
@@ -59,8 +75,9 @@ Init Command Options:
 Exit codes:
   0  All flows passed
   1  One or more flows failed
-  2  Parse error, a malformed --header, or a config file that fails to load
-     or validate (invalid YAML, schema, or an unset \${VAR})
+  2  Parse error, a malformed --header, a config file that fails to load
+     or validate (invalid YAML, schema, or an unset \${VAR}), or an api
+     flow that references an unset {env.NAME}
 `);
 }
 
@@ -121,6 +138,7 @@ function parseStepTimeoutArg(arg: string): number | string {
 
 function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
+    paths: [],
     showHelp: false,
   };
 
@@ -170,8 +188,8 @@ function parseArgs(args: string[]): CliOptions {
         // "last one wins" CLI flag behaves.
         options.headers = { ...options.headers, [parsed.name]: parsed.value };
       }
-    } else if (!arg.startsWith("-") && !options.path) {
-      options.path = arg;
+    } else if (!arg.startsWith("-")) {
+      options.paths.push(arg);
     }
   }
 
@@ -200,6 +218,25 @@ function discoverFlowFiles(path: string): string[] {
   }
 
   return [];
+}
+
+/**
+ * Every flow file for `paths`, in order: each path's own files in the
+ * order the paths were given, a directory's files sorted. A file reached
+ * twice runs once, at its first position.
+ */
+function discoverAllFlowFiles(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const path of paths) {
+    for (const file of discoverFlowFiles(path)) {
+      if (!seen.has(file)) {
+        seen.add(file);
+        files.push(file);
+      }
+    }
+  }
+  return files;
 }
 
 interface ParsedFlow {
@@ -233,6 +270,44 @@ function parseFlowFiles(filePaths: string[]): {
 }
 
 /**
+ * Load-time check for api flows: every `{env.NAME}` reference in every flow
+ * must be set before any flow runs, so a missing key fails the run before
+ * any request is sent. Returns one error per flow with unset references.
+ */
+function findUnsetEnvReferences(parsedFlows: ParsedFlow[]): ParseError[] {
+  const errors: ParseError[] = [];
+  for (const { filePath, flow } of parsedFlows) {
+    if (flow.surface !== "api") {
+      continue;
+    }
+    const unset = unsetEnvReferences(asApiFlow(flow), process.env);
+    if (unset.length > 0) {
+      errors.push({ filePath, error: formatUnsetEnv(unset) });
+    }
+  }
+  return errors;
+}
+
+/**
+ * The run's redactor, with every env value the api flows read registered
+ * before the first flow runs. Shared by every flow, and applied to every
+ * line of run output, so a secret read by one flow never shows up in
+ * another flow's output either.
+ */
+function createRunRedactor(parsedFlows: ParsedFlow[]): Redactor {
+  const redactor = new Redactor();
+  for (const { flow } of parsedFlows) {
+    if (flow.surface !== "api") {
+      continue;
+    }
+    for (const reference of collectEnvReferences(asApiFlow(flow))) {
+      redactor.addEnvSecret(reference.name, process.env[reference.name]);
+    }
+  }
+  return redactor;
+}
+
+/**
  * Takes the merged config as one object rather than a long positional list:
  * several of its fields are same-typed millisecond numbers (`timeout` is the
  * assertion-retry budget, `stepTimeout` the CLI process-kill deadline) and
@@ -241,8 +316,10 @@ function parseFlowFiles(filePaths: string[]): {
 async function runFlows(
   parsedFlows: ParsedFlow[],
   config: FlowSpecConfig,
+  redactor: Redactor,
 ): Promise<FlowResult[]> {
   const results: FlowResult[] = [];
+  const print = (text: string) => console.log(redactor.redact(text));
 
   for (let i = 0; i < parsedFlows.length; i++) {
     const { flow } = parsedFlows[i];
@@ -255,8 +332,9 @@ async function runFlows(
       headersScope: config.headersScope,
       cwd: config.cwd,
       captureLimit: config.captureLimit,
+      redactor,
     });
-    console.log(formatResult(result));
+    print(formatResult(result));
     results.push(result);
 
     // A setup failure "came from config" exactly when this flow declared no
@@ -280,7 +358,7 @@ async function runFlows(
       // actually failed — pointing at `setup:` for a headers failure would
       // send the user debugging a block that is fine (or absent).
       if (i + 1 < parsedFlows.length) {
-        console.log(
+        print(
           failedHeadersFromConfig
             ? `Aborting run: applying the shared headers from ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`
             : `Aborting run: the shared setup in ${CONFIG_FILE_NAME} failed. Remaining flows skipped.`,
@@ -294,7 +372,7 @@ async function runFlows(
           duration: 0,
           skipped: true,
         };
-        console.log(formatResult(skippedResult));
+        print(formatResult(skippedResult));
         results.push(skippedResult);
       }
       break;
@@ -357,16 +435,15 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(2);
   }
 
-  if (!options.path) {
+  if (options.paths.length === 0) {
     console.error("Error: No path specified");
     showHelp();
     process.exit(1);
   }
 
-  const absolutePath = resolve(options.path);
-
-  if (!existsSync(absolutePath)) {
-    console.error(`Error: Path not found: ${options.path}`);
+  const missingPath = options.paths.find((path) => !existsSync(resolve(path)));
+  if (missingPath !== undefined) {
+    console.error(`Error: Path not found: ${missingPath}`);
     process.exit(1);
   }
 
@@ -388,7 +465,7 @@ async function handleRunCommand(args: string[]): Promise<void> {
     process.exit(2);
   }
 
-  const flowFiles = discoverFlowFiles(options.path);
+  const flowFiles = discoverAllFlowFiles(options.paths);
 
   if (flowFiles.length === 0) {
     console.log("No flow files found");
@@ -398,17 +475,26 @@ async function handleRunCommand(args: string[]): Promise<void> {
   // Parse all flow files first
   const { flows, errors } = parseFlowFiles(flowFiles);
 
-  // If there are parse errors, report them and exit with code 2
-  if (errors.length > 0) {
+  // An api flow's unset {env.NAME} is a load-time error like a parse
+  // error: checked across every flow before any of them sends a request.
+  const envErrors = findUnsetEnvReferences(flows);
+
+  // If there are parse or env errors, report them and exit with code 2
+  if (errors.length > 0 || envErrors.length > 0) {
     for (const { filePath, error } of errors) {
       console.error(`Error parsing ${filePath}:`);
       console.error(`  ${error}`);
     }
+    for (const { filePath, error } of envErrors) {
+      console.error(`Error loading ${filePath}:`);
+      console.error(`  ${error.split("\n").join("\n  ")}`);
+    }
     process.exit(2);
   }
 
-  // Run all flows
-  const results = await runFlows(flows, mergedConfig);
+  // Run all flows, one at a time, in discovery order
+  const redactor = createRunRedactor(flows);
+  const results = await runFlows(flows, mergedConfig, redactor);
 
   // Print summary
   console.log();
