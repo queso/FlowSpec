@@ -2,7 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import yaml from "js-yaml";
 import { z } from "zod";
-import { addSchemaFailureIssues, FlowStepSchema } from "./types.js";
+import {
+  addSchemaFailureIssues,
+  FlowStepSchema,
+  VARIABLE_NAME_PATTERN,
+} from "./types.js";
+
+const ENV_NAME_REGEX = new RegExp(`^${VARIABLE_NAME_PATTERN}$`);
 
 /**
  * Default process-kill deadline for a CLI run step, in milliseconds.
@@ -90,6 +96,20 @@ export const FlowSpecConfigSchema = z
     // pixel, or any other third party the page happens to request. "all" is
     // the explicit opt-out for deployments that need them context-wide.
     headersScope: z.enum(["origin", "all"]).optional(),
+    // Api-surface only: env names a flow reads through {env.NAME} that are
+    // not secrets, such as a service URL or a run id used in order ids.
+    // They are not redacted and get no short-value warning. Every env name
+    // not listed here stays secret.
+    publicEnv: z
+      .array(
+        z.string().refine(
+          (name) => ENV_NAME_REGEX.test(name),
+          (name) => ({
+            message: `"${name}" is not an env variable name (expected ${VARIABLE_NAME_PATTERN})`,
+          }),
+        ),
+      )
+      .optional(),
     // CLI-surface working-directory override. A relative value resolves
     // against process.cwd() — that resolution, and creating a temp
     // directory when this is absent, is src/workdir.ts's job, not
@@ -327,6 +347,7 @@ export function mergeConfig(
     // which of the two sources supplied any given header.
     headers: cliOptions.headers ?? config.headers,
     headersScope: config.headersScope,
+    publicEnv: config.publicEnv,
     // Config-only, like setup/headersScope: no CLI-options equivalent for
     // either key in this item's scope.
     cwd: config.cwd,

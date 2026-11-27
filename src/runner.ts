@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { runApiFlow } from "./api-runner.js";
 import { runCliFlow } from "./cli-runner.js";
+import type { Redactor } from "./redact.js";
 import type {
   FlowError,
   FlowResult,
@@ -10,7 +12,7 @@ import type {
   StepAction,
   StepAssertion,
 } from "./types.js";
-import { asCliFlow, asWebFlow } from "./types.js";
+import { asApiFlow, asCliFlow, asWebFlow } from "./types.js";
 
 // Declare minimal Bun types for TypeScript when running in Bun runtime
 declare global {
@@ -63,6 +65,13 @@ export interface RunnerOptions {
   cwd?: string;
   /** CLI-surface per-stream capture ceiling, in bytes. Web flows ignore this. */
   captureLimit?: number;
+  /**
+   * Api-surface secret redactor shared across a run, so a secret read by one
+   * flow is redacted from every later flow's output. Other surfaces ignore it.
+   */
+  redactor?: Redactor;
+  /** Api-surface env names that are not secrets (config `publicEnv`). */
+  publicEnv?: readonly string[];
 }
 
 /**
@@ -792,6 +801,22 @@ export async function runFlow(
       timeout: options?.timeout,
       stepTimeout: options?.stepTimeout,
       captureLimit: options?.captureLimit,
+    });
+  }
+
+  // Api flows send HTTP requests directly and never touch agent-browser.
+  // Config-level setup is web-only and is not applied; `stepTimeout` is the
+  // per-request deadline, the same "one step may take this long" bound it
+  // is for a CLI run step.
+  if (flow.surface === "api") {
+    return runApiFlow(asApiFlow(flow), {
+      baseUrl: options?.baseUrl,
+      timeout: options?.timeout,
+      requestTimeout: options?.stepTimeout,
+      headers: options?.headers,
+      headersScope: options?.headersScope,
+      redactor: options?.redactor,
+      publicEnv: options?.publicEnv,
     });
   }
 

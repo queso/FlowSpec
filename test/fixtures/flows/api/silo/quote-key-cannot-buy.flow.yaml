@@ -1,0 +1,21 @@
+name: quote-key-cannot-buy
+description: |
+  A key scoped to quoting gets 403 on a real buy, and the platform is never
+  called.
+surface: api
+steps:
+  - request:
+      post: /tiktok/arcane/labels
+      headers:
+        Authorization: "Bearer {env.PORTER_QUOTE_KEY}"
+        Idempotency-Key: e2e-forbidden-1
+      json: {orderIds: ["576002"], weight: {value: "1.2", unit: "LB"}}
+    expect:
+      - status: 403
+      - json: {path: "$.missingScope", equals: "labels:buy"}
+  - request:
+      get: "{env.PLATFORM_FAKE_URL}/__calls"
+      query: {path: /fulfillment/202309/packages, orderId: "576002"}
+    timeout: 0
+expect:
+  - json: {path: "$.count", equals: 0}

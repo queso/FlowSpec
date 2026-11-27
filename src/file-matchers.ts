@@ -52,16 +52,19 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Exported (and generic over the failure type) so the api surface's GET
+ * polling (src/api-runner.ts) shares this exact loop and its deadline guard.
+ *
  * Run `check` once immediately (zero overhead); if it fails and `timeout` is
  * a positive number, keep re-running it every POLL_INTERVAL until `timeout`
  * elapses, returning the last failure. A file's presence/content can change
  * between polls (an async writer still flushing), so `check` re-reads from
  * disk on every call rather than being memoized.
  */
-async function pollUntilPass(
-  check: () => Promise<MatchFailure | undefined>,
+export async function pollUntilPass<Failure>(
+  check: () => Promise<Failure | undefined>,
   timeout: number | undefined,
-): Promise<MatchFailure | undefined> {
+): Promise<Failure | undefined> {
   const firstResult = await check();
   if (!firstResult) {
     return undefined;
@@ -72,7 +75,7 @@ async function pollUntilPass(
   }
 
   const deadline = Date.now() + timeout;
-  let lastResult: MatchFailure | undefined = firstResult;
+  let lastResult: Failure | undefined = firstResult;
 
   while (Date.now() < deadline) {
     await sleep(Math.max(0, Math.min(POLL_INTERVAL, deadline - Date.now())));

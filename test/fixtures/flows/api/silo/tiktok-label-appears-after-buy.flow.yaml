@@ -1,0 +1,22 @@
+name: tiktok-label-appears-after-buy
+description: |
+  The label record for a TikTok buy becomes readable shortly after the buy.
+  The lookup is a GET, so it is retried until the record appears.
+surface: api
+steps:
+  - request:
+      post: /tiktok/arcane/labels
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+        Idempotency-Key: e2e-late-retry-1
+      json: {orderIds: ["576100"], weight: {value: "1.2", unit: "LB"}}
+    capture: {package_id: "$.packageId"}
+    expect:
+      - status: 200
+  - request:
+      get: "/tiktok/arcane/labels/{package_id}"
+      headers:
+        Authorization: "Bearer {env.PORTER_BUY_KEY}"
+    expect:
+      - status: 200
+      - json: {path: "$.packageId", equals: "{package_id}"}
